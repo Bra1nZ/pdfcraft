@@ -799,6 +799,22 @@ impl Document {
         self.output_security().0
     }
 
+    /// True when an incremental save of `self` can carry `other`'s objects under `self`'s
+    /// encryption (see [`Document::overlay_changes_from`]). Passwords and authentication level
+    /// are not an encryption identity: the same passwords can protect a different key,
+    /// algorithm or permissions. The dictionary's object number also matters, since the writer
+    /// must leave that object unencrypted. A different file key always changes the dictionary
+    /// too; comparing it as well costs nothing.
+    pub fn has_same_output_security(&self, other: &Document) -> bool {
+        match (self.output_security(), other.output_security()) {
+            ((None, _), (None, _)) => true,
+            ((Some(a), a_num), (Some(b), b_num)) => {
+                a_num == b_num && a.dict() == b.dict() && a.file_key() == b.file_key() && self.first_id() == other.first_id()
+            }
+            _ => false,
+        }
+    }
+
     /// Protect the document with a password (§7.6.4). Takes effect on the next save, which is
     /// always a full rewrite. Returns the handler (authenticated as owner).
     pub fn set_encryption(&mut self, params: &pdfcraft_crypt::NewEncryption) -> Result<(), CosError> {
@@ -1334,7 +1350,13 @@ impl Document {
     /// incremental save must still append to this file (the last saved revision). Objects
     /// that already match are left untouched. Reads go through private readers so neither
     /// document's editing cache is filled.
+    ///
+    /// Output security must match: the copied trailer must describe the handler and
+    /// encryption-dictionary exemption this writer uses. Otherwise write `current` in full.
     pub fn overlay_changes_from(&mut self, current: &Document) -> Result<(), CosError> {
+        if !self.has_same_output_security(current) {
+            return Err(CosError::Security("cannot overlay different output encryption; write the current document in full".into()));
+        }
         let saved_nums = self.object_numbers();
         let current_nums = current.object_numbers();
         let mut freed = Vec::new();

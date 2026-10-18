@@ -663,6 +663,11 @@ impl Session {
     /// was edited: its bytes as opened are the damaged file, and this save is how the repair the
     /// user was told about reaches the disk (#1937). Not a signed one: a full rewrite would
     /// break its signatures, so with no edits it keeps its bytes, damage and all.
+    ///
+    /// Undo past a save that changed security restores a snapshot whose encryption differs from
+    /// the last saved file. That snapshot is written in full too: an update appended to the saved
+    /// file would be read with the wrong key, and would keep the revision it was meant to replace
+    /// (#3276).
     pub fn save_bytes(&self, id: DocId) -> Result<Arc<Vec<u8>>, EditError> {
         let doc = self.get(id).ok_or(EditError::NoDocument)?;
         let Some(editor) = doc.editor.as_ref() else { return Ok(doc.bytes.clone()) };
@@ -682,6 +687,13 @@ impl Session {
                 write_incremental(&cos, &opts)
             } else {
                 let mut base = pdfcraft_cos::Document::open_with_password(editor.saved.clone(), editor.saved_keys.reopen.as_deref())?;
+                // Undo may restore security from before the last save even though it has
+                // not changed relative to the snapshot's own source. Never combine that
+                // trailer with the saved file's encryption, or retain its obsolete bytes. A full
+                // write renumbers objects, so older encrypted snapshots usually land here again.
+                if !base.has_same_output_security(&cos) {
+                    return write_full(&cos, &opts);
+                }
                 base.overlay_changes_from(&cos)?;
                 write_incremental(&base, &opts)
             }
