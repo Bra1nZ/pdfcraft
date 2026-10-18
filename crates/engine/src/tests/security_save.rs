@@ -2,6 +2,8 @@
 use super::*;
 use pdfcraft_cos::{Algorithm, Document as CosDocument, NewEncryption, Object, SaveOptions, write_full};
 
+/// A two-page file with a title and XMP metadata, protected with `user`/`owner` and no
+/// restrictions. `inline` moves `/Encrypt` into the trailer, as some writers store it.
 fn encrypted_fixture(algorithm: Algorithm, inline: bool) -> Arc<Vec<u8>> {
     let mut doc = CosDocument::open(Arc::new(fixture(2))).unwrap();
     pdfcraft_organize::set_info(&mut doc, "Title", "Security regression title").unwrap();
@@ -59,6 +61,7 @@ fn assert_saved_content(s: &Session, id: DocId, bytes: Arc<Vec<u8>>, password: O
     Ok(())
 }
 
+/// Remove protection, save, undo, save: the file is encrypted again with its original passwords.
 #[test]
 fn undo_saved_security_removal_restores_encrypted_content() {
     let mut failures = Vec::new();
@@ -94,6 +97,7 @@ fn undo_saved_security_removal_restores_encrypted_content() {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
+/// Protect, save, undo, save: the file is plain again and readable without a password.
 #[test]
 fn undo_saved_protection_restores_plain_content() {
     let mut failures = Vec::new();
@@ -121,6 +125,8 @@ fn undo_saved_protection_restores_plain_content() {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
+/// Undoing a saved change of algorithm, permissions, metadata encryption or key restores the
+/// original security dictionary, even though the password strings never changed.
 #[test]
 fn undo_saved_rekey_with_the_same_passwords_restores_original_security() {
     let mut failures = Vec::new();
@@ -155,6 +161,8 @@ fn undo_saved_rekey_with_the_same_passwords_restores_original_security() {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
+/// A full save renumbers `/Encrypt`; undoing past it must not leave the restored dictionary
+/// encrypted as an ordinary object.
 #[test]
 fn undo_encrypted_compaction_restores_the_encrypt_dictionary_exemption() {
     let mut cos = CosDocument::open(Arc::new(fixture(3))).unwrap();
@@ -220,6 +228,7 @@ fn undo_saved_removal_after_unlock_keeps_the_user_restrictions() {
     }
 }
 
+/// Undo across a save that kept the same security still appends to the last saved file.
 #[test]
 fn undo_ordinary_encrypted_edits_keeps_the_last_saved_revision() {
     let mut s = Session::new();
@@ -237,6 +246,8 @@ fn undo_ordinary_encrypted_edits_keeps_the_last_saved_revision() {
     assert_saved_content(&s, id, rotated, Some("user"), true).unwrap();
 }
 
+/// Undoing a saved password change restores the original passwords; the new ones no longer open
+/// the file.
 #[test]
 fn undo_saved_password_change_restores_original_passwords() {
     let mut s = Session::new();

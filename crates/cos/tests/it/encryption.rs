@@ -498,11 +498,13 @@ fn a_stream_labelled_xref_is_encrypted_when_saved() {
 // Undo can restore a snapshot whose output security differs from the last saved file (#3276).
 // Overlaying such a snapshot onto that file must be refused before anything changes.
 
+/// Edit `/Title` in the document information dictionary: an unsaved change to compare.
 fn set_title(doc: &mut Document, title: &str) {
     let info = doc.trailer().reference(b"Info").unwrap();
     doc.update_dict(info, |d| d.set(b"Title".to_vec(), Object::String(PdfString { bytes: title.as_bytes().to_vec(), hex: false }))).unwrap();
 }
 
+/// Protect again with the same passwords and no restrictions; `seed` picks the key and `/ID`.
 fn rekey(doc: &mut Document, alg: Algorithm, seed: u8) {
     doc.set_encryption(&NewEncryption {
         algorithm: alg,
@@ -515,6 +517,7 @@ fn rekey(doc: &mut Document, alg: Algorithm, seed: u8) {
     .unwrap();
 }
 
+/// Replace the first file identifier, which is part of the key, and keep the second.
 fn with_first_id(doc: &mut Document, id: &[u8]) {
     let Some(Object::Array(ids)) = doc.trailer().get(b"ID").cloned() else { panic!("no /ID") };
     let id = Object::String(PdfString { bytes: id.to_vec(), hex: true });
@@ -527,6 +530,8 @@ fn state(doc: &Document) -> (Dict, Vec<u32>, Vec<u32>, bool, Vec<u8>) {
     (doc.trailer().clone(), doc.object_numbers(), doc.modified_objects(), doc.is_modified(), save)
 }
 
+/// Every incompatible pairing is refused with `CosError::Security` and leaves the target exactly
+/// as it was; the same overlay with matching security does apply.
 #[test]
 fn an_overlay_with_different_output_security_is_refused_before_any_change() {
     let encrypted = Arc::new(protect(Algorithm::Aes256, "user", "owner", -1));
