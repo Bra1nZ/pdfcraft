@@ -665,10 +665,11 @@ impl Session {
     /// break its signatures, so with no edits it keeps its bytes, damage and all.
     ///
     /// Undo past a save that changed security restores a snapshot whose encryption differs from
-    /// the last saved file. Like any change of security, that snapshot is written in full: an
-    /// update appended to the saved file would be read with the wrong key, and would keep the
-    /// revision it was meant to replace (#3276). In a signed document that fails with
-    /// [`EditError::SignedRewrite`] rather than invalidate the signatures.
+    /// the last saved file. An update appended to that file would be read with the wrong key and
+    /// keep the revision it was meant to replace, so the snapshot is appended to its own source
+    /// instead, whose encryption it shares (#3276). That keeps the source's revisions, object
+    /// numbers and signatures. Revisions saved after that source are dropped: undo went back
+    /// past all of them. An unedited snapshot is its source's bytes as they are.
     pub fn save_bytes(&self, id: DocId) -> Result<Arc<Vec<u8>>, EditError> {
         let doc = self.get(id).ok_or(EditError::NoDocument)?;
         let Some(editor) = doc.editor.as_ref() else { return Ok(doc.bytes.clone()) };
@@ -679,29 +680,29 @@ impl Session {
         // What the user removed again before saving (a cleared redaction mark) stays out of the file.
         let opts = SaveOptions { mod_date: self.now().map(pdfcraft_cos::pdf_date), drop_unlinked: true, ..SaveOptions::default() };
         // A restored snapshot can be based on an earlier revision. Append to the last saved
-        // file so that revision stays in the chain. A full rewrite (redaction, new encryption,
-        // a reconstructed file) still writes the current graph on its own.
+        // file when it has the snapshot's security, so that revision stays in the chain. A full
+        // rewrite (redaction, new encryption, a reconstructed file) still writes the current
+        // graph on its own.
         let rewrite = editor.cos.full_save_required() || editor.cos.encryption_changed() || editor.cos.revisions().is_empty();
         let cos = writable(&editor.cos)?;
-        let signed = doc.is_signed();
-        let written = guard(|| {
+        guard(|| {
             if on_saved || rewrite {
-                return write_incremental(&cos, &opts).map(Some);
+                return write_incremental(&cos, &opts);
             }
             let mut base = pdfcraft_cos::Document::open_with_password(editor.saved.clone(), editor.saved_keys.reopen.as_deref())?;
-            // Undo may restore security from before the last save even though it has not changed
-            // relative to the snapshot's own source. That can't be appended to the saved file.
             if base.overlay_changes_from(&cos)? {
-                write_incremental(&base, &opts).map(Some)
-            } else if signed {
-                Ok(None)
+                write_incremental(&base, &opts)
+            } else if !cos.is_modified() {
+                Ok(cos.bytes().to_vec())
             } else {
-                write_full(&cos, &opts).map(Some)
+                // Undo restored security from before the last save: append the snapshot to its
+                // own source, which it hasn't changed security against.
+                write_incremental(&cos, &opts)
             }
         })
         .map_err(EditError::Write)?
-        .map_err(|e| EditError::Write(e.to_string()))?;
-        written.map(Arc::new).ok_or_else(|| EditError::SignedRewrite("Saving after undoing a security change".into()))
+        .map(Arc::new)
+        .map_err(|e| EditError::Write(e.to_string()))
     }
 
     /// A compact, garbage-collected rewrite (Save As ▸ "Optimized" / Reduce File Size groundwork).

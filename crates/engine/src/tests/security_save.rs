@@ -69,7 +69,8 @@ fn undo_saved_security_removal_restores_encrypted_content() {
         for inline in [false, true] {
             for password in ["owner", "user"] {
                 let mut s = Session::new();
-                let id = s.open("encrypted.pdf", None, encrypted_fixture(algorithm, inline), Some(password)).unwrap();
+                let original = encrypted_fixture(algorithm, inline);
+                let id = s.open("encrypted.pdf", None, original.clone(), Some(password)).unwrap();
                 s.apply(id, Edit::RemoveProtection).unwrap();
                 let plain = s.save_bytes(id).unwrap();
                 assert_saved_content(&s, id, plain.clone(), None, false).unwrap();
@@ -81,6 +82,7 @@ fn undo_saved_security_removal_restores_encrypted_content() {
                     failures.push(format!("{algorithm:?}, inline={inline}, {password}: {error}"));
                     continue;
                 }
+                assert!(restored.starts_with(original.as_slice()), "appended to the encrypted original, not rewritten");
                 // Both original passwords still work; saving also retains this session's rights.
                 assert_saved_content(&s, id, restored.clone(), Some("user"), true).unwrap();
                 assert_saved_content(&s, id, restored.clone(), Some("owner"), true).unwrap();
@@ -103,6 +105,7 @@ fn undo_saved_protection_restores_plain_content() {
     let mut failures = Vec::new();
     for algorithm in [Algorithm::Rc4_128, Algorithm::Aes128, Algorithm::Aes256] {
         let (mut s, id) = session_with(2);
+        let original = s.get(id).unwrap().bytes.clone();
         s.apply(id, Edit::Protect(Protection { algorithm, ..protection(Some("user"), Some("owner")) })).unwrap();
         let protected = s.save_bytes(id).unwrap();
         assert_saved_content(&s, id, protected.clone(), Some("owner"), true).unwrap();
@@ -114,6 +117,7 @@ fn undo_saved_protection_restores_plain_content() {
             failures.push(format!("{algorithm:?}: {error}"));
             continue;
         }
+        assert!(restored.starts_with(original.as_slice()), "{algorithm:?}: appended to the plain original");
         s.mark_saved(id, restored.clone(), None).unwrap();
         assert!(!s.get(id).unwrap().dirty);
         assert_eq!(*s.save_bytes(id).unwrap(), *restored);
@@ -264,30 +268,59 @@ fn undo_saved_password_change_restores_original_passwords() {
     assert!(CosDocument::open_with_password(restored, Some("new-owner")).is_err());
 }
 
-/// A signed document is never rewritten in full, even by this fallback. Signing clears the undo
-/// history and security can't be changed once signed, so no edit reaches this state; the test
-/// marks the document signed directly.
+/// Undo past a security save back to a signed state, then save: the signature stays valid.
+/// Deleting a signed field unsigns the document, so security can change before the undo.
 #[test]
-fn undo_past_a_security_change_never_rewrites_a_signed_document() {
+fn undo_past_a_security_save_keeps_a_restored_signature_valid() {
     let p12 = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../sign/tests/data/ec-p256.p12")).unwrap();
     let digital_id = sign::pkcs12::open(&p12, "test").unwrap();
     // After the test certificate's start date (2026-10-02).
-    let mut signer = Session::new().with_clock(|| 1_800_000_000);
-    let signed_id = signer.open("signed.pdf", None, Arc::new(fixture(1)), None).unwrap();
-    let signed =
-        signer.sign(signed_id, &digital_id, SignOptions { page: 0, rect: Some([20.0, 20.0, 180.0, 60.0]), ..SignOptions::default() }).unwrap();
-    signer.mark_signed(signed_id, signed, None).unwrap();
-    let signatures = signer.get(signed_id).unwrap().signatures.clone();
-
-    let mut s = Session::new();
-    let id = s.open("encrypted.pdf", None, encrypted_fixture(Algorithm::Aes256, false), Some("owner")).unwrap();
-    s.apply(id, Edit::RemoveProtection).unwrap();
-    let plain = s.save_bytes(id).unwrap();
-    s.mark_saved(id, plain, None).unwrap();
+    let mut s = Session::new().with_clock(|| 1_800_000_000);
+    s.set_trusted_certificates(vec![digital_id.certificate.clone()]);
+    let id = s.open("fixture.pdf", None, Arc::new(fixture(1)), None).unwrap();
+    let signed = s.sign(id, &digital_id, SignOptions { page: 0, rect: Some([20.0, 20.0, 180.0, 60.0]), ..SignOptions::default() }).unwrap();
+    s.mark_signed(id, signed.clone(), None).unwrap();
+    let field = s.get(id).unwrap().signatures[0].field.clone();
+    s.apply(id, Edit::DeleteField { name: field }).unwrap();
+    assert!(!s.get(id).unwrap().is_signed());
+    s.apply(id, Edit::Protect(protection(Some("user"), Some("owner")))).unwrap();
+    let protected = s.save_bytes(id).unwrap();
+    s.mark_saved(id, protected, None).unwrap();
     s.undo(id).unwrap();
-    s.doc_mut(id).unwrap().signatures = signatures;
-    assert!(s.get(id).unwrap().is_signed());
-    assert!(matches!(s.save_bytes(id), Err(EditError::SignedRewrite(_))));
+    s.undo(id).unwrap();
+    assert!(s.get(id).unwrap().is_signed(), "undo restores the signed snapshot");
+    let restored = s.save_bytes(id).unwrap();
+    assert_eq!(*restored, *signed, "the signed file as it was, with no revision after the signature");
+    let mut u = Session::new().with_clock(|| 1_800_000_000);
+    u.set_trusted_certificates(vec![digital_id.certificate.clone()]);
+    let uid = u.open("restored.pdf", None, restored, None).unwrap();
+    assert_eq!(u.get(uid).unwrap().signatures[0].status, SignatureStatus::Valid);
+}
+
+/// The restored state can have unsaved edits of its own: they are appended to its source, in
+/// that source's security, and the undone revision is still left out.
+#[test]
+fn undo_past_a_security_save_keeps_the_snapshot_edits() {
+    for encrypted in [false, true] {
+        let mut s = Session::new();
+        let (original, password) =
+            if encrypted { (encrypted_fixture(Algorithm::Aes256, false), Some("owner")) } else { (Arc::new(fixture(2)), None) };
+        let id = s.open("a.pdf", None, original.clone(), password).unwrap();
+        s.apply(id, Edit::RotatePages { pages: vec![0], degrees: 90 }).unwrap();
+        let change = if encrypted { Edit::RemoveProtection } else { Edit::Protect(protection(Some("user"), Some("owner"))) };
+        s.apply(id, change).unwrap();
+        let changed = s.save_bytes(id).unwrap();
+        s.mark_saved(id, changed, None).unwrap();
+        s.undo(id).unwrap();
+        let restored = s.save_bytes(id).unwrap();
+        assert!(restored.starts_with(original.as_slice()) && restored.len() > original.len(), "{encrypted}: appended to the source");
+        let mut reopened = Session::new();
+        let rid = reopened.open("restored.pdf", None, restored.clone(), password).unwrap();
+        let doc = reopened.get(rid).unwrap();
+        assert_eq!((doc.info.encrypted, doc.info.pages[0].rotation), (encrypted, 90), "{encrypted}");
+        assert_eq!(page_texts(&reopened, rid), ["Page 1", "Page 2"], "{encrypted}");
+        assert_eq!(restored.windows(b"(Page 1)".len()).any(|w| w == b"(Page 1)"), !encrypted, "{encrypted}: plaintext only in a plain file");
+    }
 }
 
 /// An optimized save packs objects into object streams under new numbers. Undo past it restores

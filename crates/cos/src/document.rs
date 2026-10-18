@@ -802,17 +802,17 @@ impl Document {
     }
 
     /// True when `self` and `other` are written with the same encryption: the same security
-    /// dictionary and file key, and below revision 5, where the first file identifier is part of
-    /// the key, the same identifier. Passwords and authentication level are not an encryption
-    /// identity: the same passwords can protect a different key, algorithm or permissions, and
-    /// user and owner openings share one. Where the dictionary is stored (its object number, or
-    /// inline) is not compared: [`Document::overlay_changes_from`] takes that from the document
-    /// it copies. A different file key always changes the dictionary too; comparing it as well
-    /// costs nothing.
+    /// dictionary, and below revision 5, where the first file identifier is part of the key, the
+    /// same identifier. Together they determine the file key: revisions 2–4 derive it from the
+    /// password, `/O`, `/P` and `/ID`, and revisions 5–6 wrap it in `/UE` and `/OE`. Passwords
+    /// and authentication level are not an encryption identity: the same passwords can protect
+    /// a different key, algorithm or permissions, and user and owner openings share one. Where
+    /// the dictionary is stored (its object number, or inline) is not compared:
+    /// [`Document::overlay_changes_from`] takes that from the document it copies.
     pub fn has_same_output_security(&self, other: &Document) -> bool {
         match (self.output_handler(), other.output_handler()) {
             (None, None) => true,
-            (Some(a), Some(b)) => a.dict() == b.dict() && a.file_key() == b.file_key() && (a.dict().r >= 5 || self.first_id() == other.first_id()),
+            (Some(a), Some(b)) => a.dict() == b.dict() && (a.dict().r >= 5 || self.first_id() == other.first_id()),
             _ => false,
         }
     }
@@ -1356,7 +1356,7 @@ impl Document {
     ///
     /// Returns `false`, changing nothing, when output security differs
     /// ([`Document::has_same_output_security`]): an update appended to this file would be read
-    /// under other security than the objects before it, so `current` must be written in full. Otherwise the `/Encrypt` dictionary
+    /// under other security than the objects before it, so append `current` to its own source. Otherwise the `/Encrypt` dictionary
     /// comes with `current`'s objects and trailer, and so does the number the writer leaves
     /// unencrypted, even where a full save had moved the dictionary.
     pub fn overlay_changes_from(&mut self, current: &Document) -> Result<bool, CosError> {

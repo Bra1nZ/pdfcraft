@@ -513,7 +513,8 @@ fn set_title(doc: &mut Document, title: &str) {
     }
 }
 
-/// Protect again with the same passwords and no restrictions; `seed` picks the key and `/ID`.
+/// Protect again with the same passwords and no restrictions. `seed` picks the AES-256 key, and
+/// the `/ID` when the document has none.
 fn rekey(doc: &mut Document, alg: Algorithm, seed: u8) {
     doc.set_encryption(&NewEncryption {
         algorithm: alg,
