@@ -161,8 +161,8 @@ fn undo_saved_rekey_with_the_same_passwords_restores_original_security() {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
-/// A full save renumbers `/Encrypt`; undoing past it must not leave the restored dictionary
-/// encrypted as an ordinary object.
+/// A full save renumbers `/Encrypt` but keeps the encryption. Undo past it appends to that save,
+/// keeping its revision, and leaves the restored dictionary unencrypted.
 #[test]
 fn undo_encrypted_compaction_restores_the_encrypt_dictionary_exemption() {
     let mut cos = CosDocument::open(Arc::new(fixture(3))).unwrap();
@@ -184,10 +184,11 @@ fn undo_encrypted_compaction_restores_the_encrypt_dictionary_exemption() {
     let compact_doc = CosDocument::open_with_password(compact.clone(), Some("owner")).unwrap();
     assert_eq!(original.security().unwrap().dict(), compact_doc.security().unwrap().dict());
     assert_ne!(original.trailer().reference(b"Encrypt"), compact_doc.trailer().reference(b"Encrypt"), "compaction renumbered /Encrypt");
-    s.mark_saved(id, compact, None).unwrap();
+    s.mark_saved(id, compact.clone(), None).unwrap();
     s.undo(id).unwrap();
     let restored = s.save_bytes(id).unwrap();
     s.check_save(id, &restored).unwrap();
+    assert!(restored.starts_with(compact.as_slice()), "the same encryption still appends to the last save");
     assert!(!restored.windows(b"(Page 1)".len()).any(|w| w == b"(Page 1)"), "page content stays encrypted");
     assert!(CosDocument::open(restored.clone()).is_err() && CosDocument::open_with_password(restored.clone(), Some("wrong")).is_err());
     let mut reopened = Session::new();
@@ -261,4 +262,87 @@ fn undo_saved_password_change_restores_original_passwords() {
     assert_saved_content(&s, id, restored.clone(), Some("owner"), true).unwrap();
     assert!(CosDocument::open_with_password(restored.clone(), Some("new-user")).is_err());
     assert!(CosDocument::open_with_password(restored, Some("new-owner")).is_err());
+}
+
+/// A signed document is never rewritten in full, even by this fallback. Signing clears the undo
+/// history and security can't be changed once signed, so no edit reaches this state; the test
+/// marks the document signed directly.
+#[test]
+fn undo_past_a_security_change_never_rewrites_a_signed_document() {
+    let p12 = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../sign/tests/data/ec-p256.p12")).unwrap();
+    let digital_id = sign::pkcs12::open(&p12, "test").unwrap();
+    // After the test certificate's start date (2026-10-02).
+    let mut signer = Session::new().with_clock(|| 1_800_000_000);
+    let signed_id = signer.open("signed.pdf", None, Arc::new(fixture(1)), None).unwrap();
+    let signed =
+        signer.sign(signed_id, &digital_id, SignOptions { page: 0, rect: Some([20.0, 20.0, 180.0, 60.0]), ..SignOptions::default() }).unwrap();
+    signer.mark_signed(signed_id, signed, None).unwrap();
+    let signatures = signer.get(signed_id).unwrap().signatures.clone();
+
+    let mut s = Session::new();
+    let id = s.open("encrypted.pdf", None, encrypted_fixture(Algorithm::Aes256, false), Some("owner")).unwrap();
+    s.apply(id, Edit::RemoveProtection).unwrap();
+    let plain = s.save_bytes(id).unwrap();
+    s.mark_saved(id, plain, None).unwrap();
+    s.undo(id).unwrap();
+    s.doc_mut(id).unwrap().signatures = signatures;
+    assert!(s.get(id).unwrap().is_signed());
+    assert!(matches!(s.save_bytes(id), Err(EditError::SignedRewrite(_))));
+}
+
+/// An optimized save packs objects into object streams under new numbers. Undo past it restores
+/// a graph that puts other objects at those numbers: objects that look unchanged but sat in such
+/// a stream must still be readable from the next save.
+#[test]
+fn undo_past_an_optimized_save_keeps_the_objects_it_packed() {
+    let mut encrypted = CosDocument::open(Arc::new(fixture(3))).unwrap();
+    encrypted
+        .set_encryption(&NewEncryption {
+            algorithm: Algorithm::Aes256,
+            user_password: "user",
+            owner_password: "owner",
+            permissions: -1,
+            encrypt_metadata: true,
+            seed: [7; 32],
+        })
+        .unwrap();
+    let encrypted = Arc::new(write_full(&encrypted, &SaveOptions::default()).unwrap());
+    for (bytes, password) in [(Arc::new(fixture(3)), None), (encrypted, Some("owner"))] {
+        let mut s = Session::new();
+        let id = s.open("a.pdf", None, bytes, password).unwrap();
+        s.apply(id, Edit::DeletePages { pages: vec![2] }).unwrap();
+        let compact = s.save_full_bytes(id).unwrap();
+        let packed = CosDocument::open_with_password(compact.clone(), password).unwrap();
+        s.mark_saved(id, compact, None).unwrap();
+        s.undo(id).unwrap();
+        // The premise: an object the snapshot keeps unchanged sits in a stream whose number the
+        // snapshot reuses for something else.
+        let current = &s.get(id).unwrap().editor.as_ref().unwrap().cos;
+        let numbers = current.object_numbers();
+        let at_risk: Vec<u32> = numbers
+            .iter()
+            .copied()
+            .filter(|&n| matches!(packed.xref_entry(n), Some(pdfcraft_cos::XrefEntry::InStream { stream, .. }) if numbers.contains(&stream)))
+            .filter(|&n| {
+                let r = pdfcraft_cos::ObjRef::new(n, current.generation(n));
+                *packed.get(r) == *current.get(r)
+            })
+            .collect();
+        // Only the encrypted file sets this up; the plain one checks there is no regression.
+        if password.is_some() {
+            assert!(!at_risk.is_empty(), "no unchanged packed object in a reused stream");
+        }
+        let restored = s.save_bytes(id).unwrap();
+        s.check_save(id, &restored).unwrap();
+        let saved = CosDocument::open_with_password(restored.clone(), password).unwrap();
+        assert!(saved.repair_log().is_empty(), "{password:?}: {:?}", saved.repair_log());
+        let current = &s.get(id).unwrap().editor.as_ref().unwrap().cos;
+        for num in current.object_numbers() {
+            let r = pdfcraft_cos::ObjRef::new(num, current.generation(num));
+            assert_eq!(*saved.get(r), *current.get(r), "{password:?}: object {num}");
+        }
+        let mut reopened = Session::new();
+        let rid = reopened.open("restored.pdf", None, restored, password).unwrap();
+        assert_eq!(page_texts(&reopened, rid), ["Page 1", "Page 2", "Page 3"], "{password:?}");
+    }
 }
