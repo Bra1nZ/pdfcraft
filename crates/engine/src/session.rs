@@ -687,21 +687,20 @@ impl Session {
         let cos = writable(&editor.cos)?;
         guard(|| {
             if on_saved || rewrite {
-                return write_incremental(&cos, &opts);
+                return write_incremental(&cos, &opts).map(Arc::new);
             }
             let mut base = pdfcraft_cos::Document::open_with_password(editor.saved.clone(), editor.saved_keys.reopen.as_deref())?;
             if base.overlay_changes_from(&cos)? {
-                write_incremental(&base, &opts)
+                write_incremental(&base, &opts).map(Arc::new)
             } else if !cos.is_modified() {
-                Ok(cos.bytes().to_vec())
+                Ok(cos.bytes().clone())
             } else {
                 // Undo restored security from before the last save: append the snapshot to its
                 // own source, which it hasn't changed security against.
-                write_incremental(&cos, &opts)
+                write_incremental(&cos, &opts).map(Arc::new)
             }
         })
         .map_err(EditError::Write)?
-        .map(Arc::new)
         .map_err(|e| EditError::Write(e.to_string()))
     }
 
