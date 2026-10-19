@@ -8,7 +8,7 @@ use pdfcraft_render::{LayerOp, OpenError, ReadingColors, RenderConfig, RenderPoo
 #[cfg(test)]
 use crate::check_refresh_panic;
 use crate::edit::{EditCtx, check_permission, run_edit};
-use crate::history::{Keys, MAX_UNDO, Scope, keys_after, scope_of, uses_scripts};
+use crate::history::{Editor, Keys, MAX_UNDO, Scope, keys_after, scope_of, uses_scripts};
 use crate::{
     BookmarkPage, BookmarkRow, CombineSource, Combined, DataFormat, DocId, Document, Edit, EditError, Hidden, ImageResolution,
     LOW_RESOLUTION_PRINT_DPI, Label, ObjectKind, OptimizeReport, RecoverySnapshot, SignOptions, SourceKind, SplitPart, SummarySort, TrustStore,
@@ -665,43 +665,64 @@ impl Session {
     /// break its signatures, so with no edits it keeps its bytes, damage and all.
     ///
     /// Undo past a save that changed security restores a snapshot whose encryption differs from
-    /// the last saved file. An update appended to that file would be read with the wrong key and
-    /// keep the revision it was meant to replace, so the snapshot is appended to its own source
-    /// instead, whose encryption it shares (#3276). That keeps the source's revisions, object
-    /// numbers and signatures. Revisions saved after that source are dropped: undo went back
-    /// past all of them. An unedited snapshot is its source's bytes as they are.
+    /// the last saved file; see [`Self::save_target`] for where that is appended instead (#3276).
     pub fn save_bytes(&self, id: DocId) -> Result<Arc<Vec<u8>>, EditError> {
         let doc = self.get(id).ok_or(EditError::NoDocument)?;
         let Some(editor) = doc.editor.as_ref() else { return Ok(doc.bytes.clone()) };
-        let on_saved = Arc::ptr_eq(editor.cos.bytes(), &editor.saved);
-        if !editor.cos.is_modified() && on_saved && (!editor.cos.reconstructed() || doc.is_signed()) {
-            return Ok(editor.saved.clone());
+        let target = Self::save_target(editor);
+        let on_target = Arc::ptr_eq(editor.cos.bytes(), &target);
+        if !editor.cos.is_modified() && on_target && (!editor.cos.reconstructed() || doc.is_signed()) {
+            return Ok(target);
         }
         // What the user removed again before saving (a cleared redaction mark) stays out of the file.
         let opts = SaveOptions { mod_date: self.now().map(pdfcraft_cos::pdf_date), drop_unlinked: true, ..SaveOptions::default() };
-        // A restored snapshot can be based on an earlier revision. Append to the last saved
-        // file when it has the snapshot's security, so that revision stays in the chain. A full
-        // rewrite (redaction, new encryption, a reconstructed file) still writes the current
-        // graph on its own.
+        // A restored snapshot can be based on an earlier revision than the target. Append it to
+        // the target so that file's revisions stay in the chain. A full rewrite (redaction, new
+        // encryption, a reconstructed file) still writes the current graph on its own.
         let rewrite = editor.cos.full_save_required() || editor.cos.encryption_changed() || editor.cos.revisions().is_empty();
         let cos = writable(&editor.cos)?;
         guard(|| {
-            if on_saved || rewrite {
+            if on_target || rewrite {
                 return write_incremental(&cos, &opts).map(Arc::new);
             }
-            let mut base = pdfcraft_cos::Document::open_with_password(editor.saved.clone(), editor.saved_keys.reopen.as_deref())?;
+            // The target has the snapshot's security, so the snapshot's key opens it.
+            let mut base = editor.cos.open_with_same_credentials(target.clone())?;
             if base.overlay_changes_from(&cos)? {
                 write_incremental(&base, &opts).map(Arc::new)
-            } else if !cos.is_modified() {
-                Ok(cos.bytes().clone())
             } else {
-                // Undo restored security from before the last save: append the snapshot to its
-                // own source, which it hasn't changed security against.
+                // Not expected, as the target was chosen for this security: append to the
+                // snapshot's own source, which shares it.
                 write_incremental(&cos, &opts).map(Arc::new)
             }
         })
         .map_err(EditError::Write)?
         .map_err(|e| EditError::Write(e.to_string()))
+    }
+
+    /// The file a save appends to: the last saved file, unless undo restored security from before
+    /// it. An update appended there would be read with the wrong key and keep the revision it was
+    /// meant to replace (#3276). The snapshot then goes onto the newest file of this session that
+    /// has its security and continues its own source, which at worst is that source. Saves append
+    /// to the file they continue, so within one lineage the longest file is the newest. Revisions
+    /// saved after it have the other security and were all undone: they are dropped, as any
+    /// change of security drops the revisions before it.
+    fn save_target(editor: &Editor) -> Arc<Vec<u8>> {
+        let security = editor.cos.output_security_identity();
+        if editor.cos.encryption_changed() || security == editor.saved_security {
+            return editor.saved.clone();
+        }
+        let source = editor.cos.bytes();
+        editor
+            .undo
+            .iter()
+            .chain(&editor.redo)
+            .map(|(_, cos, _, _)| cos)
+            .filter(|cos| !cos.encryption_changed() && !cos.reconstructed() && cos.output_security_identity() == security)
+            .map(|cos| cos.bytes())
+            .filter(|bytes| !source.is_empty() && bytes.len() > source.len() && bytes.starts_with(source))
+            .max_by_key(|bytes| bytes.len())
+            .unwrap_or(source)
+            .clone()
     }
 
     /// A compact, garbage-collected rewrite (Save As ▸ "Optimized" / Reduce File Size groundwork).
@@ -745,6 +766,7 @@ impl Session {
             }
             editor.saved = bytes;
             editor.saved_keys = keys;
+            editor.saved_security = editor.cos.output_security_identity();
             editor.unsaved_file = false;
         }
         if let Some(p) = path {

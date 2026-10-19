@@ -598,6 +598,17 @@ fn an_overlay_with_different_output_security_is_refused_before_any_change() {
         assert!(before == state(&target), "{case}: a refused overlay changed the target");
     }
 
+    // A target with a pending security change is refused even when the snapshot matches what
+    // that change will write.
+    let mut pending = Document::open(Arc::new(fixture())).unwrap();
+    rekey(&mut pending, Algorithm::Aes256, 9);
+    set_title(&mut pending, "Saved title");
+    let matching = Document::open_with_password(Arc::new(protect(Algorithm::Aes256, "user", "owner", -1)), Some("owner")).unwrap();
+    assert!(pending.has_same_output_security(&matching));
+    let before = state(&pending);
+    assert!(matches!(pending.overlay_changes_from(&matching), Ok(false)), "pending security change");
+    assert!(before == state(&pending), "a refused overlay changed the target");
+
     // Control: the same overlay with matching security does change the target.
     let mut target = encrypted_target();
     let mut current = open_owner();

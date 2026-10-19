@@ -323,6 +323,39 @@ fn undo_past_a_security_save_keeps_the_snapshot_edits() {
     }
 }
 
+/// Edit, save, change security, save, then undo past both and save: the edit's saved revision
+/// stays in the chain, in the original security; only the revision in the other security goes.
+#[test]
+fn undo_past_a_security_save_keeps_earlier_saves_of_the_same_security() {
+    for encrypted in [false, true] {
+        let (original, password) =
+            if encrypted { (encrypted_fixture(Algorithm::Aes256, false), Some("owner")) } else { (Arc::new(fixture(2)), None) };
+        let mut s = Session::new();
+        let id = s.open("a.pdf", None, original.clone(), password).unwrap();
+        s.apply(id, Edit::RotatePages { pages: vec![0], degrees: 90 }).unwrap();
+        let edited = s.save_bytes(id).unwrap();
+        assert!(edited.starts_with(original.as_slice()), "{encrypted}: the edit is an incremental save");
+        s.mark_saved(id, edited.clone(), None).unwrap();
+        let change = if encrypted { Edit::RemoveProtection } else { Edit::Protect(protection(Some("user"), Some("owner"))) };
+        s.apply(id, change).unwrap();
+        let changed = s.save_bytes(id).unwrap();
+        s.mark_saved(id, changed, None).unwrap();
+        s.undo(id).unwrap();
+        s.undo(id).unwrap();
+        let restored = s.save_bytes(id).unwrap();
+        assert!(restored.starts_with(edited.as_slice()) && restored.len() > edited.len(), "{encrypted}: appended to the edit's save");
+        let mut reopened = Session::new();
+        let rid = reopened.open("restored.pdf", None, restored.clone(), password).unwrap();
+        let doc = reopened.get(rid).unwrap();
+        assert_eq!((doc.info.encrypted, doc.info.pages[0].rotation), (encrypted, 0), "{encrypted}: the rotation is undone");
+        assert_eq!(page_texts(&reopened, rid), ["Page 1", "Page 2"], "{encrypted}");
+        assert_eq!(restored.windows(b"(Page 1)".len()).any(|w| w == b"(Page 1)"), !encrypted, "{encrypted}: plaintext only in a plain file");
+        s.mark_saved(id, restored.clone(), None).unwrap();
+        assert!(!s.get(id).unwrap().dirty, "{encrypted}");
+        assert_eq!(*s.save_bytes(id).unwrap(), *restored, "{encrypted}: an unchanged save is byte-stable");
+    }
+}
+
 /// An optimized save packs objects into object streams under new numbers. Undo past it restores
 /// a graph that puts other objects at those numbers: objects that look unchanged but sat in such
 /// a stream must still be readable from the next save.
