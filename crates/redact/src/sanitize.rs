@@ -444,7 +444,11 @@ fn content_pass(doc: &mut Document, text: bool, layers: bool, write: bool) -> Re
     }
     // What a page no longer draws must not stay reachable through an inherited or shared
     // /Resources either.
-    crate::interp::unlink_doomed(doc, &doomed, &retired_properties)?;
+    // Only a removal rewrites the document; a count on a clone has nothing to unlink, and a
+    // cleanup error there would be mistaken for "nothing to remove".
+    if write {
+        crate::interp::unlink_doomed(doc, &doomed, &retired_properties)?;
+    }
     Ok((total, retained_off_layers))
 }
 

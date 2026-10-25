@@ -186,13 +186,12 @@ fn all_redacted_type3_glyphs_cause_font_removal_from_resources() {
     let bytes = write_full(&doc, &SaveOptions::default()).unwrap();
     let saved = Document::open(Arc::new(bytes)).unwrap();
     let page = pdfcraft_model::pages(&saved).swap_remove(0);
-    if let Some(res_val) = page.dict.get(b"Resources") {
-        if let Some(res) = saved.resolve(res_val).as_dict() {
-            if let Some(fonts_val) = res.get(b"Font") {
-                let fonts = saved.resolve(fonts_val).as_dict().unwrap().clone();
-                assert!(!fonts.contains(b"T3"), "Font /T3 was not removed from Resources");
-            }
-        }
+    if let Some(res_val) = page.dict.get(b"Resources")
+        && let Some(res) = saved.resolve(res_val).as_dict()
+        && let Some(fonts_val) = res.get(b"Font")
+    {
+        let fonts = saved.resolve(fonts_val).as_dict().unwrap().clone();
+        assert!(!fonts.contains(b"T3"), "Font /T3 was not removed from Resources");
     }
 }
 

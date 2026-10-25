@@ -14,11 +14,12 @@ fn res_dict(doc: &Document, res: &Dict, key: &[u8]) -> Dict {
     res.get(key).and_then(|o| doc.resolve(o).as_dict().cloned()).unwrap_or_default()
 }
 
-/// Identifies a font in the document.
+/// Identifies a font in the document. Only fonts that are indirect objects are cleaned: a Type 3
+/// font held directly in a resource dictionary fails closed (see [`unlink_type3`]), because its
+/// glyph programs could not be told apart or rewritten reliably.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub(crate) enum FontKey {
     Ref(ObjRef),
-    Inline(ObjRef, usize),
 }
 
 /// Build the mapping from character code (0..=255) to glyph name in a Type 3 font.
@@ -99,41 +100,23 @@ pub(crate) fn type3_code_to_glyph(doc: &Document, font_dict: &Dict) -> Result<[O
     Ok(map)
 }
 
-fn resolve_font_in_res(doc: &Document, holder_ref: ObjRef, res: &Dict, font_name: &[u8]) -> Option<(FontKey, Dict)> {
+fn resolve_font_in_res(doc: &Document, res: &Dict, font_name: &[u8]) -> Option<(FontKey, Dict)> {
     let fonts = res_dict(doc, res, b"Font");
-    let (idx, (_, font_obj)) = fonts.iter().enumerate().find(|(_, (k, _))| k.as_slice() == font_name)?;
-    let font_ref = font_obj.as_ref();
-    let resolved = doc.resolve(font_obj);
-    let dict = resolved.as_dict()?.clone();
-    if dict.name(b"Subtype") == Some(b"Type3") {
-        let key = match font_ref {
-            Some(r) => FontKey::Ref(r),
-            None => FontKey::Inline(holder_ref, idx),
-        };
-        Some((key, dict))
-    } else {
-        None
-    }
+    let font_obj = fonts.get(font_name)?;
+    // A direct Type 3 font is refused during discovery, so none reaches the scan.
+    let font_ref = font_obj.as_ref()?;
+    let dict = doc.resolve(font_obj).as_dict()?.clone();
+    (dict.name(b"Subtype") == Some(b"Type3")).then_some((FontKey::Ref(font_ref), dict))
 }
 
-fn resolve_extgstate_font(doc: &Document, holder_ref: ObjRef, res: &Dict, gs_name: &[u8]) -> Option<(FontKey, Dict)> {
+fn resolve_extgstate_font(doc: &Document, res: &Dict, gs_name: &[u8]) -> Option<(FontKey, Dict)> {
     let extg = res_dict(doc, res, b"ExtGState");
-    let state_obj = extg.get(gs_name)?;
-    let state = doc.resolve(state_obj).as_dict().cloned()?;
+    let state = doc.resolve(extg.get(gs_name)?).as_dict().cloned()?;
     let font_entry = state.get(b"Font").and_then(|f| doc.resolve(f).as_array().cloned())?;
     let font_obj = font_entry.first()?;
-    let font_ref = font_obj.as_ref();
-    let resolved = doc.resolve(font_obj);
-    let dict = resolved.as_dict()?.clone();
-    if dict.name(b"Subtype") == Some(b"Type3") {
-        let key = match font_ref {
-            Some(r) => FontKey::Ref(r),
-            None => FontKey::Inline(holder_ref, 0),
-        };
-        Some((key, dict))
-    } else {
-        None
-    }
+    let font_ref = font_obj.as_ref()?;
+    let dict = doc.resolve(font_obj).as_dict()?.clone();
+    (dict.name(b"Subtype") == Some(b"Type3")).then_some((FontKey::Ref(font_ref), dict))
 }
 
 #[derive(Default)]
@@ -237,7 +220,9 @@ struct ScanContext<'a> {
     doc: &'a Document,
     font_maps: &'a HashMap<FontKey, [Option<Vec<u8>>; 256]>,
     used_glyphs: &'a mut HashMap<FontKey, HashSet<Vec<u8>>>,
-    seen_forms: &'a mut HashSet<ObjRef>,
+    /// A form scanned with its inherited font and the resources it draws through: the same form
+    /// drawn in another context is scanned again.
+    seen_forms: &'a mut HashSet<(ObjRef, Option<FontKey>, ObjRef)>,
 }
 
 fn scan_content_stream(
@@ -266,12 +251,12 @@ fn scan_content_stream(
             b"Q" => current_font = stack.pop().unwrap_or(None),
             b"Tf" => {
                 if let Some(name) = op.name(0) {
-                    current_font = resolve_font_in_res(ctx.doc, holder_ref, res, name).map(|(k, _)| k);
+                    current_font = resolve_font_in_res(ctx.doc, res, name).map(|(k, _)| k);
                 }
             }
             b"gs" => {
                 if let Some(name) = op.name(0)
-                    && let Some((k, _)) = resolve_extgstate_font(ctx.doc, holder_ref, res, name)
+                    && let Some((k, _)) = resolve_extgstate_font(ctx.doc, res, name)
                 {
                     current_font = Some(k);
                 }
@@ -319,19 +304,22 @@ fn scan_content_stream(
             b"Do" => {
                 if let Some(name) = op.last_name() {
                     let xo = res_dict(ctx.doc, res, b"XObject");
-                    if let Some(r) = xo.get(name).and_then(Object::as_ref)
-                        && ctx.seen_forms.insert(r)
-                    {
+                    if let Some(r) = xo.get(name).and_then(Object::as_ref) {
                         let obj = ctx.doc.get(r);
                         if let Object::Stream(s) = &*obj
                             && s.dict.name(b"Subtype") == Some(b"Form")
                         {
-                            let data = s.decoded()?;
                             let form_own_res = s.dict.get(b"Resources").and_then(|ro| ctx.doc.resolve(ro).as_dict().cloned());
-                            if let Some(form_res) = form_own_res {
-                                scan_content_stream(ctx, std::slice::from_ref(&data), r, &form_res, current_font, depth + 1)?;
-                            } else {
-                                scan_content_stream(ctx, std::slice::from_ref(&data), holder_ref, res, current_font, depth + 1)?;
+                            // A form with resources of its own draws through them; one without draws
+                            // through its caller's.
+                            let through = if form_own_res.is_some() { r } else { holder_ref };
+                            if !ctx.seen_forms.insert((r, current_font, through)) {
+                                continue;
+                            }
+                            let data = s.decoded()?;
+                            match form_own_res {
+                                Some(form_res) => scan_content_stream(ctx, std::slice::from_ref(&data), r, &form_res, current_font, depth + 1)?,
+                                None => scan_content_stream(ctx, std::slice::from_ref(&data), holder_ref, res, current_font, depth + 1)?,
                             }
                         }
                     }
@@ -351,14 +339,12 @@ pub(crate) fn prune_type3_from_resources(doc: &Document, res: &mut Dict, content
         return Ok(());
     }
 
-    let joined = Pieces::join(content);
-    let parsed = joined.parse();
-    if parsed.skipped > 0 {
-        return Err(CosError::Syntax { offset: 0, detail: "redaction could not fully inspect content stream syntax".into() });
-    }
+    // The operators of forms that draw through these resources count too: dropping a font a child
+    // form still shows would leave its text without one.
+    let ops = crate::interp::resource_ops(doc, res, content)?;
 
     let mut drawn_font_names = HashSet::new();
-    for op in &parsed.ops {
+    for op in &ops {
         if op.is("Tf") {
             if let Some(name) = op.name(0) {
                 drawn_font_names.insert(name.to_vec());
@@ -468,47 +454,43 @@ pub(crate) fn unlink_type3(doc: &mut Document) -> Result<(), RedactError> {
 
     // Discover all Type 3 fonts in holders and forms.
     let mut type3_fonts: HashMap<FontKey, Dict> = HashMap::new();
-    let check_res_fonts = |doc: &Document, holder_ref: ObjRef, res: &Dict, t3_fonts: &mut HashMap<FontKey, Dict>| {
-        let fonts = res_dict(doc, res, b"Font");
-        for (idx, (_, font_obj)) in fonts.iter().enumerate() {
-            let font_ref = font_obj.as_ref();
+    // A Type 3 font held directly in a resource dictionary can neither be named reliably nor have its
+    // glyph programs rewritten, so redaction fails closed rather than leaving its glyphs unchecked.
+    let direct = || CosError::Syntax {
+        offset: 0,
+        detail: "redaction could not establish safe Type 3 font cleanup: a Type 3 font is not an indirect object".into(),
+    };
+    let check_res_fonts = |doc: &Document, res: &Dict, t3_fonts: &mut HashMap<FontKey, Dict>| -> Result<(), CosError> {
+        let mut consider = |font_obj: &Object| -> Result<(), CosError> {
             if let Some(dict) = doc.resolve(font_obj).as_dict().cloned()
                 && dict.name(b"Subtype") == Some(b"Type3")
             {
-                let key = match font_ref {
-                    Some(r) => FontKey::Ref(r),
-                    None => FontKey::Inline(holder_ref, idx),
-                };
-                t3_fonts.entry(key).or_insert(dict);
+                let font_ref = font_obj.as_ref().ok_or_else(direct)?;
+                t3_fonts.entry(FontKey::Ref(font_ref)).or_insert(dict);
             }
+            Ok(())
+        };
+        for (_, font_obj) in res_dict(doc, res, b"Font").iter() {
+            consider(font_obj)?;
         }
-        let extg = res_dict(doc, res, b"ExtGState");
-        for (idx, (_, state_obj)) in extg.iter().enumerate() {
+        for (_, state_obj) in res_dict(doc, res, b"ExtGState").iter() {
             if let Some(state) = doc.resolve(state_obj).as_dict()
                 && let Some(font_arr) = doc.resolve(state.get(b"Font").unwrap_or(&Object::Null)).as_array()
                 && let Some(font_obj) = font_arr.first()
             {
-                let font_ref = font_obj.as_ref();
-                if let Some(dict) = doc.resolve(font_obj).as_dict().cloned()
-                    && dict.name(b"Subtype") == Some(b"Type3")
-                {
-                    let key = match font_ref {
-                        Some(r) => FontKey::Ref(r),
-                        None => FontKey::Inline(holder_ref, idx),
-                    };
-                    t3_fonts.entry(key).or_insert(dict);
-                }
+                consider(font_obj)?;
             }
         }
+        Ok(())
     };
 
     for (node, _) in &holders {
         if let Some(res) = doc.get(*node).as_dict().and_then(|d| d.get(b"Resources")).and_then(|r| doc.resolve(r).as_dict().cloned()) {
-            check_res_fonts(doc, *node, &res, &mut type3_fonts);
+            check_res_fonts(doc, &res, &mut type3_fonts)?;
         }
     }
-    for (form_ref, form_res) in &form_holders {
-        check_res_fonts(doc, *form_ref, form_res, &mut type3_fonts);
+    for (_, form_res) in &form_holders {
+        check_res_fonts(doc, form_res, &mut type3_fonts)?;
     }
 
     if type3_fonts.is_empty() {
@@ -547,7 +529,7 @@ pub(crate) fn unlink_type3(doc: &mut Document) -> Result<(), RedactError> {
 
     // Also scan any surviving form that wasn't reached by page streams directly.
     for (form_ref, form_res) in &form_holders {
-        if !ctx.seen_forms.contains(form_ref) {
+        if !ctx.seen_forms.iter().any(|(form, _, _)| form == form_ref) {
             let Object::Stream(s) = &*ctx.doc.get(*form_ref) else { continue };
             let data = s.decoded()?;
             scan_content_stream(&mut ctx, std::slice::from_ref(&data), *form_ref, form_res, None, 0)?;
@@ -582,9 +564,10 @@ pub(crate) fn unlink_type3(doc: &mut Document) -> Result<(), RedactError> {
             remove_font_from_holders(doc, &holders, &form_holders, font_key)?;
         } else {
             if procs_changed {
+                let FontKey::Ref(fr) = font_key;
                 if let Some(r) = char_procs_ref {
                     doc.update_dict(r, |d| *d = char_procs.clone())?;
-                } else if let FontKey::Ref(fr) = font_key {
+                } else {
                     doc.update_dict(*fr, |d| {
                         d.set(b"CharProcs".to_vec(), Object::Dict(char_procs.clone()));
                     })?;
@@ -593,7 +576,6 @@ pub(crate) fn unlink_type3(doc: &mut Document) -> Result<(), RedactError> {
 
             // Clean exclusive resources from the Type 3 font's /Resources.
             if let Some(f_res_val) = font_dict.get(b"Resources") {
-                let f_res_ref = f_res_val.as_ref();
                 let mut f_res = doc.resolve(f_res_val).as_dict().cloned().unwrap_or_default();
 
                 let mut used_in_glyphs = UsedInGlyphs::default();
@@ -611,17 +593,16 @@ pub(crate) fn unlink_type3(doc: &mut Document) -> Result<(), RedactError> {
                 }
 
                 if prune_type3_font_resources(doc, &mut f_res, &used_in_glyphs) {
-                    if let Some(rr) = f_res_ref {
-                        doc.update_dict(rr, |d| *d = f_res.clone())?;
-                    } else if let FontKey::Ref(fr) = font_key {
-                        doc.update_dict(*fr, |d| {
-                            if f_res.is_empty() {
-                                d.remove(b"Resources");
-                            } else {
-                                d.set(b"Resources".to_vec(), Object::Dict(f_res.clone()));
-                            }
-                        })?;
-                    }
+                    // The pruned dictionary goes into the font object: a font's /Resources object is
+                    // often the page's own, and rewriting that would strip the page of its resources.
+                    let FontKey::Ref(fr) = font_key;
+                    doc.update_dict(*fr, |d| {
+                        if f_res.is_empty() {
+                            d.remove(b"Resources");
+                        } else {
+                            d.set(b"Resources".to_vec(), Object::Dict(f_res.clone()));
+                        }
+                    })?;
                 }
             }
         }
@@ -640,28 +621,12 @@ fn remove_font_from_holders(
         let mut fonts = res_dict(doc, res, b"Font");
         let mut changed = false;
         let names: Vec<Vec<u8>> = fonts.iter().map(|(n, _)| n.to_vec()).collect();
-        for (idx, n) in names.into_iter().enumerate() {
-            if let Some(val) = fonts.get(&n) {
-                let key = match val.as_ref() {
-                    Some(r) => FontKey::Ref(r),
-                    None => FontKey::Inline(ObjRef::new(0, 0), idx), // matched below if target is Ref
-                };
-                let matches = match (target_key, key) {
-                    (FontKey::Ref(target_r), FontKey::Ref(key_r)) => *target_r == key_r,
-                    (FontKey::Inline(target_h, target_idx), _) => {
-                        // Compare by value
-                        if let Some(target_dict) = doc.get(*target_h).as_dict() {
-                            fonts.get(&n) == target_dict.get(n.as_slice()) && *target_idx == idx
-                        } else {
-                            false
-                        }
-                    }
-                    _ => false,
-                };
-                if matches {
-                    fonts.remove(&n);
-                    changed = true;
-                }
+        for n in names {
+            if let Some(val) = fonts.get(&n)
+                && val.as_ref().map(FontKey::Ref) == Some(*target_key)
+            {
+                fonts.remove(&n);
+                changed = true;
             }
         }
         if changed {
