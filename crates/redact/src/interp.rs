@@ -477,6 +477,7 @@ fn content_draws(doc: &Document, content: &[Vec<u8>], xo: &Dict, name: &[u8], de
 /// left as it is for them. Retired properties are likewise unlinked only when none of the
 /// holder's pages or inheriting forms names them. Fails closed when use cannot be determined.
 pub(crate) fn unlink_doomed(doc: &mut Document, doomed: &[ObjRef], retired_properties: &[Object]) -> Result<(), RedactError> {
+    crate::type3::unlink_type3(doc)?;
     if doomed.is_empty() && retired_properties.is_empty() {
         return Ok(());
     }
@@ -1379,6 +1380,10 @@ fn xobject(
                     }
                 }
                 if let Err(error) = prune_form_resources(doc, &mut cleaned_res, content) {
+                    out.error = Some(error);
+                    return None;
+                }
+                if let Err(error) = crate::type3::prune_type3_from_resources(doc, &mut cleaned_res, content) {
                     out.error = Some(error);
                     return None;
                 }
