@@ -472,7 +472,7 @@ pub fn apply(ctx: &egui::Context, kind: ThemeKind) {
     }
     ctx.set_visuals(v);
     ctx.global_style_mut(|s| {
-        // Arabic and Kurdish mirror stock chrome (menus, combo boxes, scroll bars, headers).
+        // RTL languages mirror stock chrome (menus, combo boxes, scroll bars, headers).
         // Labels still get their paragraph direction explicitly from `bidi::ui_direction`.
         s.right_to_left = rtl;
         s.spacing.item_spacing = egui::vec2(8.0, 6.0);
