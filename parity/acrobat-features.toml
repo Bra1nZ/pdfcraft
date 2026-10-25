@@ -5793,7 +5793,7 @@ status = "shipped"
 commands = ["redact.apply"]
 tools = ["redact_apply"]
 evidence = ["crates/redact/src/tests.rs::vectors_are_removed_or_clipped_and_inline_images_go"]
-notes = "covered paths removed, others clipped; shadings clipped"
+notes = "intersecting paths removed to avoid leaking geometry behind clipping; shadings clipped"
 
 [[feature]]
 id = "protect.redact-annots-fields"
