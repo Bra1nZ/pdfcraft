@@ -11,6 +11,7 @@ use crate::widgets;
 /// Glyphs of context shown on each side of a match.
 const CONTEXT: usize = 36;
 
+/// Draw the Search panel with its query, options, progress and clickable result excerpts.
 pub(crate) fn panel(ui: &mut egui::Ui, t: &Tokens, view: &mut DocView, pages: usize) {
     crate::widgets::begin_dialog(ui);
     let searched = view.texts.len() + view.text_failed.len();

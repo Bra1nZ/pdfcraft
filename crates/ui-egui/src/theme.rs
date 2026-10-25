@@ -122,6 +122,7 @@ impl Tokens {
         }
     }
 
+    /// Return the cached theme tokens, falling back to the light palette before the first apply.
     pub fn get(ctx: &egui::Context) -> Self {
         ctx.data(|d| d.get_temp::<Tokens>(egui::Id::unique("pdfcraft-theme"))).unwrap_or_else(|| Self::for_kind(ThemeKind::Light))
     }
@@ -421,6 +422,7 @@ pub fn semibold(size: f32) -> FontId {
     FontId::new(size, FontFamily::Name("semibold".into()))
 }
 
+/// Install the palette, widget styling, text sizes and right-to-left flag for the chosen theme.
 pub fn apply(ctx: &egui::Context, kind: ThemeKind) {
     // Keep the native window inherited. A concrete egui theme pins macOS's
     // NSWindow appearance and prevents winit from delivering ThemeChanged.
@@ -492,6 +494,7 @@ pub fn apply(ctx: &egui::Context, kind: ThemeKind) {
     ctx.data_mut(|d| d.insert_temp(direction_key(), rtl));
 }
 
+/// Return the stable egui id holding the current right-to-left style flag.
 fn direction_key() -> egui::Id {
     egui::Id::unique("pdfcraft-style-right-to-left")
 }

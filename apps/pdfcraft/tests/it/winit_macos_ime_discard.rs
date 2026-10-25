@@ -2,6 +2,7 @@
 //! not runtime coverage. `vendor_graph.rs` checks the resolved graph identity.
 //! Retained vendor provenance for winit patch (7) (vendor/README.md); `vendor_graph.rs` checks the resolved graph.
 
+/// Regression test: disallowing IME in the vendored winit discards the macOS input method's marked text.
 #[test]
 fn vendor_provenance_winit_discards_the_macos_composition_when_ime_is_disallowed() {
     // egui disallows IME when a text field loses focus. winit 0.30.13 then forgets the marked text

@@ -189,6 +189,7 @@ fn copied(h: &Harness<'static, PdfCraftApp>, want: &str) -> bool {
     h.output().platform_output.commands.iter().any(|c| matches!(c, egui::OutputCommand::CopyText(t) if t == want))
 }
 
+/// Check that both the Edit menu and the context menu copy the selected page text.
 #[test]
 fn selected_text_copy_edit_and_context_menus() {
     use egui_kittest::kittest::{NodeT, Queryable};
@@ -336,6 +337,7 @@ fn selected_text_copy_preserves_unicode_and_page_clipboard() {
     assert_eq!(h.state().page_clipboard.as_ref().map(|c| c.pages.clone()), Some(vec![0]));
 }
 
+/// Check that a focused search input owns Copy and the selected page text does not also consume it.
 #[test]
 fn selected_text_copy_keeps_focused_input_clipboard_ownership() {
     let (mut h, at) = harness(|_| {});

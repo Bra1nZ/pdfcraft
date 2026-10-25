@@ -503,6 +503,8 @@ mod tests {
         std::env::var_os("PDFCRAFT_SYSTEM_FONTS").is_some_and(|v| v == "0")
     }
 
+    /// Check that the first readable fallback candidate wins, so reversing the preference list reverses the
+    /// chosen face.
     #[test]
     fn the_first_readable_candidate_wins_not_the_last() {
         // List order *is* the preference, so a loader that scanned back-to-front would pick a

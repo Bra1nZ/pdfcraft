@@ -678,6 +678,7 @@ fn error(ui: &mut egui::Ui, err: &Option<String>) {
     }
 }
 
+/// Draw the digital-ID chooser, including unusable certificates and removal confirmation.
 fn choose(ui: &mut egui::Ui, app: &mut PdfCraftApp, t: &Tokens) -> bool {
     title(ui, "Sign with a Digital ID");
     ui.label(tl!("Choose the digital ID that you want to use for signing:"));

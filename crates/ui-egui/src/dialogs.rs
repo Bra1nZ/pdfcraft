@@ -21,6 +21,7 @@ pub fn show(app: &mut PdfCraftApp, ctx: &egui::Context) {
     unlock(app, ctx);
 }
 
+/// Draw the active modal dialog and apply the action the user chose.
 fn dialogs(app: &mut PdfCraftApp, ctx: &egui::Context) {
     password(app, ctx);
     save_prompt(app, ctx);

@@ -702,6 +702,7 @@ fn a_card_dragged_to_the_bottom_edge_scrolls_the_grid_and_still_drops() {
     assert_eq!(order.get(at + 1), Some(&target_name), "dropped before {target_name}: {order:?}");
 }
 
+/// Check that right-clicking a locked card selects that card and offers Unlock for it.
 #[test]
 fn a_locked_card_offers_unlock_on_a_right_click() {
     let mut h = grid_of(vec![("one.pdf", fixture(1)), ("secret.pdf", protected("pw", "owner"))], vec2(1400.0, 900.0));
@@ -846,6 +847,8 @@ fn ctrl_keys_and_ctrl_wheel_size_the_cards_and_leave_the_window_alone() {
     assert_eq!(h.state().combine_zoom, now);
 }
 
+/// Check that wheel zoom keeps the card under the pointer fixed and never blanks its thumbnail while a
+/// sharper render arrives.
 #[test]
 fn zooming_keeps_the_card_under_the_pointer_in_place_and_thumbnails_never_go_blank() {
     let files: Vec<(String, Vec<u8>)> = (0..40).map(|i| (format!("f{i:02}.pdf"), fixture(1))).collect();
@@ -1028,6 +1031,7 @@ fn zooming_from_the_toolbar_while_scrolled_keeps_the_top_cards_in_place() {
     }
 }
 
+/// Check that zooming out at the bottom keeps the last card in place without leaving a gap below it.
 #[test]
 fn zooming_out_at_the_bottom_leaves_no_gap_below_the_last_card() {
     let (mut h, _) = scrolled_grid(20_000.0);

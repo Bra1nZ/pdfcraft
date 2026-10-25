@@ -923,6 +923,7 @@ fn driver_options_panel(ui: &mut egui::Ui, d: &mut PrintDraft, t: &Tokens) {
     });
 }
 
+/// Draw a combo box whose accessible name does not depend on the selected value.
 fn combo<T: PartialEq + Copy>(ui: &mut egui::Ui, id: &str, name: &str, value: &mut T, choices: &[(T, &str)], width: f32) {
     let shown = choices.iter().find(|c| c.0 == *value).map_or("", |c| c.1);
     egui::ComboBox::from_id_salt(id)

@@ -1,5 +1,7 @@
 //! Provenance-only: reads the retained `vendor/` copy, not the resolved dependency, so it is
 //! not runtime coverage. `vendor_graph.rs` checks the resolved graph identity.
+/// Regression test: the vendored winit keeps the X11 server-DPI fallback and the desktop file does not
+/// override scaling.
 #[test]
 fn vendor_provenance_winit_carries_the_x11_server_dpi_fallback() {
     // The behavior tests live beside the policy in winit (util::randr::tests).

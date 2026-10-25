@@ -353,6 +353,7 @@ fn finish(state: &mut MeasureView, pending: &mut Option<Edit>, doc: &Document, p
 pub(crate) fn panel(app: &mut PdfCraftApp, ui: &mut egui::Ui, t: &Tokens) {
     egui::ScrollArea::vertical().id_salt("measure-panel").show(ui, |ui| panel_body(app, ui, t));
 }
+/// Draw the measurement panel: tool selection, scale calibration, snapping and the current reading.
 fn panel_body(app: &mut PdfCraftApp, ui: &mut egui::Ui, _t: &Tokens) {
     crate::widgets::begin_dialog(ui);
     let Some((index, id)) = app.active_ids() else {

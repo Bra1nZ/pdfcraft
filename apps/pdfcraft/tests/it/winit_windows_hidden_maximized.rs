@@ -2,6 +2,7 @@
 //! not runtime coverage. `vendor_graph.rs` checks the resolved graph identity.
 //! Retained vendor provenance for winit patch (4) (vendor/README.md); `vendor_graph.rs` checks the resolved graph.
 
+/// Regression test: the vendored winit maximizes a hidden Windows window only when it is shown.
 #[test]
 fn vendor_provenance_winit_maximizes_a_hidden_windows_window_only_when_it_is_shown() {
     // eframe creates PdfCraft's window hidden, restores the saved maximized state and shows the

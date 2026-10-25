@@ -488,6 +488,8 @@ mod idle_tests {
         out.viewport_output[&egui::ViewportId::ROOT].repaint_delay
     }
 
+    /// Check that an idle dirty document schedules a bounded write and autosaves without input, then stops
+    /// waking the window.
     #[test]
     fn idle_dirty_document_requests_its_deadline_and_writes_without_input() {
         let dir = TestDir::new();
@@ -515,6 +517,8 @@ mod idle_tests {
         assert_eq!(delay, Duration::MAX, "unchanged snapshot needs no periodic wake");
     }
 
+    /// Check that an edit after autosave schedules the next deadline, keeps the old snapshot until then, and
+    /// replaces it on time.
     #[test]
     fn second_edit_after_autosave_schedules_next_deadline_and_updates_snapshot() {
         let dir = TestDir::new();
@@ -564,6 +568,7 @@ mod idle_tests {
         assert_eq!(delay, Duration::MAX, "the second snapshot also lets the window sleep");
     }
 
+    /// Check that a clean document and a document with recovery disabled never schedule an autosave.
     #[test]
     fn clean_documents_and_disabled_recovery_do_not_schedule_autosave() {
         for recovery_enabled in [false, true] {

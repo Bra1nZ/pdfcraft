@@ -96,6 +96,7 @@ pub struct Motion {
 }
 
 impl Default for Motion {
+    /// Start motion handling with animations enabled and no desktop preference sampled yet.
     fn default() -> Self {
         Self { reduced: false, source: None, asked_at: f64::NEG_INFINITY, egui_times: None, wheel: WheelReader::default(), frame: None }
     }
@@ -164,6 +165,7 @@ pub(crate) fn animated(ctx: &egui::Context) -> bool {
     ctx.global_style().animation_time > 0.0
 }
 
+/// Return the stable egui id holding the last wheel-zoom input state.
 fn zoom_id() -> egui::Id {
     egui::Id::unique("pdfcraft-motion-wheel-zoom")
 }

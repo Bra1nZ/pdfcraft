@@ -2,6 +2,8 @@
 //! not runtime coverage. `vendor_graph.rs` checks the resolved graph identity.
 //! Retained vendor provenance for winit patch (12) (vendor/README.md); `vendor_graph.rs` checks the resolved graph.
 
+/// Regression test: the vendored winit lets title-bar drags reach the app while the empty tab strip still
+/// moves the window.
 #[test]
 fn vendor_provenance_winit_lets_macos_title_bar_drags_reach_the_app() {
     // On macOS the tab strip is the title bar: a transparent title bar over a full-size content

@@ -2,6 +2,8 @@
 //! not runtime coverage. `vendor_graph.rs` checks the resolved graph identity.
 //! Retained vendor provenance for winit patch (6) (vendor/README.md); `vendor_graph.rs` checks the resolved graph.
 
+/// Regression test: the vendored winit commits a composition that ended without marked text and keeps the
+/// marked-text underline.
 #[test]
 fn vendor_provenance_winit_macos_compositions_that_end_without_marked_text() {
     // winit 0.30.13 treats `insertText` as an IME commit only while marked text is left. Input

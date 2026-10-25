@@ -521,6 +521,8 @@ mod tests {
         Line { text: text.to_owned(), rtl: false }
     }
 
+    /// Check that a Persian paragraph, including words joined by a zero-width non-joiner, reaches epaint as
+    /// one logical right-to-left run.
     #[test]
     fn persian_paragraph_keeps_logical_order_for_epaint() {
         // The line stays in reading order; epaint shapes and reorders it (see `on_screen`).
@@ -529,6 +531,7 @@ mod tests {
         assert_eq!(wrap_at("کتاب‌ها", 80), [rtl("کتاب‌ها")]);
     }
 
+    /// Check that Arabic text wraps into lines in logical reading order rather than visual order.
     #[test]
     fn arabic_lines_break_in_reading_order() {
         // The first words go on the first line, in logical order for epaint to reorder.
@@ -536,6 +539,8 @@ mod tests {
         assert_eq!(wrap_at("واحد اثنين ثلاثة أربعة", 80), [rtl("واحد اثنين ثلاثة أربعة")]);
     }
 
+    /// Check that each paragraph takes its base direction from its first strong character, not from leading
+    /// numbers or neutral text.
     #[test]
     fn base_direction_comes_from_the_first_strong_character() {
         // Latin first: a left-to-right paragraph with an Arabic phrase inside it.
@@ -549,6 +554,8 @@ mod tests {
         assert_eq!(wrap_at("واحد اثنين\nOK then\n\nשלום עולם", 80), [rtl("واحد اثنين"), ltr("OK then"), ltr(""), rtl("שלום עולם")]);
     }
 
+    /// Check that right-to-left punctuation and brackets stay in logical order for epaint to mirror when
+    /// displaying.
     #[test]
     fn rtl_punctuation_and_brackets() {
         // Logical text: epaint mirrors punctuation and brackets for display.
@@ -557,6 +564,7 @@ mod tests {
         assert_eq!(wrap_at("آیا آماده است؟", 80), [rtl("آیا آماده است؟")]);
     }
 
+    /// Check that Persian and Arabic-Indic digits stay in logical order inside a right-to-left paragraph.
     #[test]
     fn persian_digits_go_to_the_shaper_reversed() {
         // Persian and Arabic-Indic digits stay in logical order; epaint's shaper preserves their

@@ -391,6 +391,7 @@ mod tests {
         assert_eq!(input.page, egui::vec2(-1.0, 0.0));
     }
 
+    /// Check that NaN, zero, negative or infinite scales and non-wheel events add nothing.
     #[test]
     fn invalid_scales_and_events_contribute_nothing() {
         use egui::MouseWheelUnit::Line;

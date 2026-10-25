@@ -18,6 +18,7 @@ fn egui_phase(phase: event::TouchPhase) -> TouchPhase {
     }
 }
 
+/// Run three wheel frames through egui and return each frame's zoom and smooth-scroll deltas.
 fn wheel_trace(source: AxisSource, discrete: bool) -> Vec<(f32, egui::Vec2)> {
     let ctx = egui::Context::default();
     let mut previous = event::TouchPhase::Ended;
@@ -43,6 +44,8 @@ fn wheel_trace(source: AxisSource, discrete: bool) -> Vec<(f32, egui::Vec2)> {
     seen
 }
 
+/// Regression test: releasing Ctrl after a pixel-wheel zoom makes the next wheel event scroll instead of
+/// zooming.
 #[test]
 fn vendor_provenance_releasing_ctrl_after_pixel_wheel_zoom_returns_to_scrolling() {
     for source in [AxisSource::Wheel, AxisSource::WheelTilt, AxisSource::Continuous] {
@@ -53,6 +56,7 @@ fn vendor_provenance_releasing_ctrl_after_pixel_wheel_zoom_returns_to_scrolling(
     }
 }
 
+/// Regression test: discrete wheels follow the modifiers of the current event, just like pixel wheels.
 #[test]
 fn vendor_provenance_discrete_wheels_still_follow_current_modifiers() {
     let seen = wheel_trace(AxisSource::Wheel, true);
@@ -61,6 +65,7 @@ fn vendor_provenance_discrete_wheels_still_follow_current_modifiers() {
     assert!(seen[2].1.y > 0.0);
 }
 
+/// Regression test: a finger gesture keeps its Ctrl zoom through momentum until the gesture ends.
 #[test]
 fn vendor_provenance_finger_gestures_keep_their_modifier_until_the_gesture_ends() {
     // A finger scroll's momentum may arrive after Ctrl is released.
@@ -72,6 +77,7 @@ fn vendor_provenance_finger_gestures_keep_their_modifier_until_the_gesture_ends(
     assert_eq!(scroll::phase(event::TouchPhase::Ended, Some(AxisSource::Finger), false, false), event::TouchPhase::Started);
 }
 
+/// Regression test: wheel sources without a phase keep the existing start, move and end policy.
 #[test]
 fn vendor_provenance_unknown_sources_keep_the_existing_phase_policy() {
     assert_eq!(scroll::phase(event::TouchPhase::Ended, None, false, false), event::TouchPhase::Started);

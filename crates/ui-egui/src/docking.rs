@@ -366,6 +366,8 @@ fn saved_split_path(saved: &Layout<Panel>, rendered: &Layout<Panel>, path: &[boo
     None
 }
 
+/// Render the docking workspace, restoring or reporting a broken saved layout, and apply the panel actions it
+/// emits.
 pub fn show(app: &mut crate::PdfCraftApp, ui: &mut egui::Ui) {
     let t = crate::theme::Tokens::get(ui.ctx());
     let mut workspace = std::mem::take(&mut app.docking);

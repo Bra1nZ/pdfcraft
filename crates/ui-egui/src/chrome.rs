@@ -26,6 +26,8 @@ const TAB_STRIP: f32 = 38.0;
 const TAB_HEIGHT: f32 = 30.0;
 const STRIP_BUTTON: f32 = 28.0;
 
+/// Draw the window's tab strip: home and open controls, shrinkable and scrollable document tabs with drag
+/// reordering, and platform window controls.
 pub fn tab_strip(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
     // macOS: the strip is the 28 pt title bar, so the traffic lights are centred in it; tabs and
@@ -411,6 +413,8 @@ fn tab_cap(natural: &[f32], budget: f32, gap: f32, min: f32) -> Option<f32> {
     None
 }
 
+/// Draw one tab with its icon, elided label, close button and unsaved dot; records a close request and
+/// returns the tab response for drag handling.
 #[allow(clippy::too_many_arguments)]
 fn tab(
     ui: &mut egui::Ui,
@@ -632,6 +636,8 @@ fn main_menu(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
     });
 }
 
+/// Draw the right tool rail with page navigation, history, zoom, rotation and page-display controls for the
+/// active view.
 pub fn right_rail(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
     let Some((index, id)) = app.active_ids() else { return };

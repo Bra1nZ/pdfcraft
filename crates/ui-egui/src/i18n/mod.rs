@@ -261,6 +261,8 @@ impl LangInfo {
         (0..=1000).map(self.plural).max().unwrap_or(0).saturating_add(1)
     }
 
+    /// Return the parsed catalogue, building it on first use and warning about entries that fall back to
+    /// English.
     fn catalog(&self) -> &Catalog {
         self.catalog.get_or_init(|| {
             let (catalog, errors) = Catalog::parse(self.source, self.plural_forms());
@@ -766,6 +768,8 @@ mod tests {
         set_current(previous);
     }
 
+    /// Regression test: a language picker uses its native name only when a face can draw it, otherwise its
+    /// English name.
     #[test]
     fn picker_names_fall_back_to_english_when_their_script_has_no_face() {
         let hi = Lang::from_code("hi").expect("hi registered");

@@ -300,6 +300,8 @@ fn a_paragraph_edge_resizes_wherever_it_shows_the_resize_cursor() {
 // ---------------------------------------------------------------------------------------------
 // Things drawn over the page keep the page's cursor, tips and presses off.
 
+/// Check that the command palette's frame keeps the default cursor over the page while the page beside it
+/// still shows the stamp tool.
 #[test]
 fn stamp_cursor_stays_off_the_command_palette() {
     let mut h = open(link_pdf(), "300", false);
@@ -385,6 +387,7 @@ fn a_dragged_panel_tab_passes_over_a_link_without_its_tip() {
     assert!(tip_shown(&h), "and shows its tip");
 }
 
+/// Send one wheel event over the page and let its scrolling settle.
 fn wheel(h: &mut Harness<'_, PdfCraftApp>, delta: egui::Vec2) {
     h.hover_at(egui::pos2(800.0, 500.0));
     h.event(egui::Event::MouseWheel {
@@ -399,6 +402,8 @@ fn wheel(h: &mut Harness<'_, PdfCraftApp>, delta: egui::Vec2) {
     }
 }
 
+/// Check that the quick bar's frame keeps the default cursor over the page while the page below it still
+/// shows the stamp tool.
 #[test]
 fn stamp_cursor_stays_off_the_quick_bar() {
     let mut h = open(link_pdf(), "400", true);
@@ -444,6 +449,7 @@ fn open_unlock_prompt(h: &mut Harness<'_, PdfCraftApp>) {
     h.state_mut().unlock_prompt = Some(UnlockPrompt { doc, name: "test.pdf".into(), input: String::new(), error: None, then: None });
 }
 
+/// Check that the link tip and pointing cursor disappear under the Unlock prompt.
 #[test]
 fn link_tip_stays_under_the_unlock_prompt() {
     let mut h = open(link_pdf(), "300", true);
@@ -466,6 +472,7 @@ fn link_tip_stays_under_the_unlock_prompt() {
     assert_ne!(h.output().platform_output.cursor_icon, egui::CursorIcon::PointingHand);
 }
 
+/// Check that moving onto a link's floating tip still reports the link's pointing-hand cursor.
 #[test]
 fn the_link_tip_lets_the_pointer_through_to_the_link() {
     let mut h = open(link_pdf(), "150", false);

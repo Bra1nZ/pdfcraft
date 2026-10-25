@@ -1395,6 +1395,8 @@ fn heading(ui: &mut egui::Ui, t: &Tokens, key: SortKey, sort: Option<(SortKey, b
     event
 }
 
+/// Draw the Combine files table body: reorder handles, editable page ranges with validation, file metadata
+/// and per-row warnings.
 #[allow(clippy::too_many_arguments)]
 fn table_body(
     app: &mut PdfCraftApp,

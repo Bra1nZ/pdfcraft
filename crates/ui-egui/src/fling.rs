@@ -219,6 +219,7 @@ mod tests {
         assert!(!fling.gliding(), "the finger rested before it lifted");
     }
 
+    /// Check that new finger or wheel input stops an in-progress glide.
     #[test]
     fn new_input_stops_a_glide() {
         let mut fling = Fling::new(true);
@@ -239,6 +240,7 @@ mod tests {
         assert!(!fling.gliding(), "a wheel notch");
     }
 
+    /// Check that disabled flinging, a false glide flag, and a command-modified zoom gesture prevent glide.
     #[test]
     fn no_glide_where_it_is_off_or_not_wanted() {
         let mut off = Fling::new(false);

@@ -36,6 +36,7 @@ struct Gesture {
 }
 
 impl ObjectSelection {
+    /// Clear any object-selection gesture and the page it was blocking.
     pub(crate) fn cancel_pointer_gesture(&mut self) {
         self.gesture = None;
         self.blocked_page = None;

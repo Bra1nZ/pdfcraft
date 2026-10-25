@@ -91,6 +91,7 @@ pub struct ContentView {
 }
 
 impl ContentView {
+    /// Forget an in-progress pointer grab for content editing.
     pub(crate) fn cancel_pointer_gesture(&mut self) {
         self.grab = None;
     }

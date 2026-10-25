@@ -68,6 +68,8 @@ pub fn cjk_size_decision(family: &str, bytes: u64, wasm: bool, required: bool) -
 mod tests {
     use super::*;
 
+    /// Check that a required Chinese manifest needs an exact `Hans` script tag and does not accept
+    /// Traditional or region-suffixed tags.
     #[test]
     fn a_required_chinese_manifest_needs_an_exact_hans_entry() {
         assert!(has_script_tag("Hans,Latn", "Hans"));
@@ -77,6 +79,8 @@ mod tests {
         assert!(!has_script_tag("Hani,Jpan,Kore", "Hans"));
     }
 
+    /// Check that a native Chinese face over its cap is rejected when required, skipped when optional, and
+    /// uses the web cap on the web.
     #[test]
     fn a_required_native_chinese_face_over_its_cap_is_rejected_not_skipped() {
         let at_cap = MAX_NATIVE_UI_CJK_BYTES;

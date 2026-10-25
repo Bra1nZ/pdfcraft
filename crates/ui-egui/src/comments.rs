@@ -2058,6 +2058,7 @@ pub enum CanvasAction {
 /// How many custom colours the "Recent colours" row keeps.
 const RECENT_CUSTOM: usize = 5;
 
+/// Return the stable egui id for the recent custom-colour palette.
 fn recent_custom_id() -> egui::Id {
     egui::Id::unique("pdfcraft-recent-custom-colours")
 }

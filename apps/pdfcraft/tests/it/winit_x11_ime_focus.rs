@@ -2,6 +2,7 @@
 //! not runtime coverage. `vendor_graph.rs` checks the resolved graph identity.
 //! Retained vendor provenance for winit patch (5) (vendor/README.md); `vendor_graph.rs` checks the resolved graph.
 
+/// Regression test: the vendored winit focuses the X11 input context it replaces.
 #[test]
 fn vendor_provenance_winit_focuses_the_x11_input_context_it_replaces() {
     // egui allows IME when a text field gains focus and disallows it when the field loses focus.

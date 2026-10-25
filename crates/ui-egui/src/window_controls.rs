@@ -231,6 +231,7 @@ pub fn resize_edges(ctx: &egui::Context) {
         });
 }
 
+/// Return the stable egui id for desktop window-grab state.
 fn grab_id() -> egui::Id {
     egui::Id::unique("window_controls_desktop_grab")
 }

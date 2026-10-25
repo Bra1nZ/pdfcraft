@@ -1101,6 +1101,8 @@ mod tests {
         }
     }
 
+    /// Regression test: the lockfile resolves egui-wgpu 0.37.0 through an allowed source, the root manifest
+    /// does not path-patch the vendor copy, and that copy stays as provenance for the surface-fit patch.
     #[test]
     fn vendor_provenance_egui_wgpu_surface_fit_identity() {
         // Issue #577: egui-wgpu configured a window's surface at the window's size, and
@@ -1167,6 +1169,8 @@ mod tests {
         assert!(matches!(caught, Err(wgpu::Error::Validation { .. })), "outer: {caught:?}");
     }
 
+    /// Regression test: the lockfile resolves egui-wgpu 0.37.0 through an allowed source, the root manifest
+    /// does not path-patch the vendor copy, and that copy stays as provenance for the catch-errors patch.
     #[test]
     fn vendor_provenance_egui_wgpu_catch_errors_identity() {
         // Issue #519: E3 (`catch_errors`) is tested above against a real device. The reviewed 0.37
@@ -1212,6 +1216,8 @@ mod tests {
         }
     }
 
+    /// Regression test: winit resolves to 0.30.13 without a published vendor path patch, the retained copy
+    /// still carries the W1 Windows 11 monitor-scale fix, and its upstream base is recorded.
     #[test]
     fn winit_carries_the_windows_11_monitor_scale_fix() {
         // Issue #324: winit 0.30.13 as released nudges a window dragged onto a monitor with another

@@ -2,6 +2,8 @@
 //! not runtime coverage. `vendor_graph.rs` checks the resolved graph identity.
 //! Retained vendor provenance for winit patch (8) (vendor/README.md); `vendor_graph.rs` checks the resolved graph.
 
+/// Regression test: the vendored winit commits text inserted outside a key press and leaves `selectedRange`
+/// unmarked.
 #[test]
 fn vendor_provenance_winit_macos_text_inserted_outside_a_key_press() {
     // The macOS emoji picker inserts its text with `insertText` outside any key press and without

@@ -1092,6 +1092,7 @@ pub enum OpenOutcome {
 }
 
 impl PdfCraftApp {
+    /// Construct an application with the default session, panels, theme and control state.
     pub fn new() -> Self {
         Self {
             session: Session::new(),

@@ -287,6 +287,7 @@ fn toggle<'a>(widget: impl egui::Widget + 'a, radius: Option<u8>) -> impl egui::
     }
 }
 
+/// Draw a panel section heading with explicit paragraph direction and letter spacing.
 pub fn section_title(ui: &mut egui::Ui, text: &str) {
     let t = Tokens::get(ui.ctx());
     ui.add_space(10.0);
@@ -887,6 +888,7 @@ mod tests {
         .drop_without_applying_deltas();
     }
 
+    /// Check right-aligned wrapping and a single collapsed line whose logical text ends with an ellipsis.
     #[test]
     fn rtl_comment_wraps_against_the_right_edge() {
         let persian = "این یک نظر طولانی به زبان فارسی است که باید در چند خط شکسته شود";

@@ -33,6 +33,7 @@ fn score(hay: &str, needle: &str) -> Option<usize> {
     needle.chars().all(|c| it.any(|x| x == c)).then_some(100)
 }
 
+/// Draw the command palette and dispatch the chosen command or tool group.
 pub fn show(app: &mut PdfCraftApp, ctx: &egui::Context) {
     let palette_rect_id = egui::Id::unique("palette_rect");
     if !app.palette_open {

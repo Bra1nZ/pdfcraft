@@ -292,6 +292,8 @@ pub(crate) fn show(
     edit
 }
 
+/// Draw one comment thread card, including author, body or inline editor, replies, status and per-comment
+/// actions; returns an edit to apply.
 #[allow(clippy::too_many_arguments)]
 fn card(
     ui: &mut egui::Ui,

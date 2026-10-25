@@ -2,6 +2,7 @@
 //! not runtime coverage. `vendor_graph.rs` checks the resolved graph identity.
 //! Retained vendor provenance for winit patch (2) (vendor/README.md); `vendor_graph.rs` checks the resolved graph.
 
+/// Regression test: the vendored winit keeps a Wayland seat's text input until the seat itself is removed.
 #[test]
 fn vendor_provenance_winit_keeps_the_wayland_text_input_until_the_seat_goes() {
     // winit 0.30.13 destroys a Wayland seat's text input whenever the seat loses any capability (a

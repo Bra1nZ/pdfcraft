@@ -301,6 +301,8 @@ pub(crate) fn body(ui: &mut egui::Ui, app: &mut PdfCraftApp, t: &Tokens) -> bool
     close
 }
 
+/// Draw the custom-action editor: name, description and ordered steps; Save stays disabled until the name is
+/// unique and non-empty and at least one step exists.
 fn edit_body(ui: &mut egui::Ui, app: &mut PdfCraftApp, t: &Tokens) -> bool {
     let Some((original, a)) = app.wizard.editing.as_mut() else { return false };
     ui.label(egui::RichText::new(if original.is_some() { tl!("Edit Action") } else { tl!("New Action") }).font(theme::semibold(18.0)));

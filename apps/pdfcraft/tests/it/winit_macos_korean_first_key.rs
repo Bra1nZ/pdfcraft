@@ -2,6 +2,7 @@
 //! not runtime coverage. `vendor_graph.rs` checks the resolved graph identity.
 //! Retained vendor provenance for winit patch (10) (vendor/README.md); `vendor_graph.rs` checks the resolved graph.
 
+/// Regression test: the vendored winit retries the first Apple Korean key once so it starts a composition.
 #[test]
 fn vendor_provenance_winit_retries_the_first_apple_korean_key_once() {
     // On the first key in a freshly started app, Apple Korean can answer with `insertText` and the

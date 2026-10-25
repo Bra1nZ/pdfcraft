@@ -12,6 +12,8 @@ use std::path::PathBuf;
 #[path = "src/cjk_scripts.rs"]
 mod cjk_scripts;
 
+/// Build-script entry point: embed craft-fonts from `CRAFT_FONTS_DIR`, make a missing or invalid input fatal
+/// when `CRAFT_FONTS_REQUIRED` is set, and write `craft_fonts.rs` to `OUT_DIR`.
 fn main() {
     println!("cargo::rerun-if-env-changed=CRAFT_FONTS_DIR");
     println!("cargo::rerun-if-env-changed=CRAFT_FONTS_REQUIRED");
@@ -135,6 +137,8 @@ fn manifest(dir: &std::path::Path, manifest: &std::path::Path, wasm: bool, stric
 mod manifest_tests {
     use super::*;
 
+    /// Regression test: a required native-font manifest must declare at least one Hans face, while optional
+    /// input accepts another script and a missing asset still fails.
     #[test]
     fn required_native_manifest_rejects_non_hans_faces_after_parsing() {
         let root = std::env::temp_dir().join(format!("pdfcraft-required-hans-{}", std::process::id()));

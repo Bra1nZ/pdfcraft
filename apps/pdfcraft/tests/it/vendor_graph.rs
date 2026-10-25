@@ -7,6 +7,7 @@
 //! instead of treating the copies as the runtime source. The winit fork's own W17 tests own patch
 //! behaviour.
 
+/// Return the workspace root above the PdfCraft app crate.
 fn root() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
@@ -43,6 +44,8 @@ fn assert_resolved(name: &str, version: &str, url: &str, rev: &str) {
     assert!(!manifest.contains(&format!("{name} = {{ path = \"vendor/")), "vendor/{name} cannot stay a published path patch");
 }
 
+/// Regression test: the resolved window stack points at the reviewed forks and the retained vendor provenance
+/// files remain.
 #[test]
 fn vendor_provenance_window_stack_graph_is_resolved() {
     assert_resolved("winit", "0.30.13", "https://github.com/storytold/winit.git", "a517b3846ee8457d84ee4975110bfda6797c44dc");

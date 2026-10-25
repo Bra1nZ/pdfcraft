@@ -58,6 +58,7 @@ pub type Reply = Result<Value, String>;
 /// here uses a monotonic `web_time::Instant` so hidden logic cannot stall or restart it.
 const NOT_DRAWN_TIMEOUT: f64 = 5.0;
 
+/// Return the deadline used to reject control requests that wait for a drawn window.
 fn timeout() -> std::time::Duration {
     std::time::Duration::from_secs_f64(NOT_DRAWN_TIMEOUT)
 }
@@ -68,6 +69,7 @@ fn not_drawn(what: &str) -> String {
     )
 }
 
+/// Return the actionable error text for a control request whose window was not drawn in time.
 fn still_starting() -> String {
     format!("the app was still starting after {NOT_DRAWN_TIMEOUT:.0} s; the control request was not applied, retry when the window is drawn")
 }
@@ -218,6 +220,8 @@ impl egui::Plugin for ControlPlugin {
         "pdfcraft-control"
     }
 
+    /// Inject admitted control batches into the current pass, dropping stale requests, applying cancellations
+    /// and scheduling repaints.
     fn input_hook(&mut self, ctx: &egui::Context, input: &mut egui::RawInput) {
         let Ok(mut s) = self.shared.lock() else { return };
         expire_input(&mut s, web_time::Instant::now());
@@ -267,6 +271,8 @@ impl egui::Plugin for ControlPlugin {
         }
     }
 
+    /// Record presented passes and the accesskit tree and focus after a pass, so control replies observe only
+    /// drawn frames.
     fn output_hook(&mut self, ctx: &egui::Context, output: &mut egui::FullOutput) {
         let Ok(mut s) = self.shared.lock() else { return };
         s.in_pass = false;
@@ -322,6 +328,7 @@ struct Geometry {
 }
 
 impl Geometry {
+    /// Capture the current viewport size and effective pixels-per-point for the request epoch.
     fn current(ctx: &egui::Context, epoch: u64) -> Self {
         // Viewport info is refreshed by `run_logic`; the last UI pass's `viewport_rect` can be
         // stale while the window is hidden. Fall back to it only when the host cannot say. Only
@@ -359,6 +366,8 @@ impl Geometry {
     }
 }
 
+/// Return the byte size of an RGBA image of the given dimensions, or `None` when the multiplication
+/// overflows.
 fn checked_image_bytes(width: usize, height: usize) -> Option<usize> {
     width.checked_mul(height)?.checked_mul(core::mem::size_of::<egui::Color32>())
 }
@@ -411,6 +420,7 @@ struct PendingCapture {
 }
 
 impl PendingCapture {
+    /// Convert a screenshot request into the pending form that later frames finish.
     fn into_pending(self) -> Pending {
         Pending::Screenshot {
             slot: self.slot,
@@ -560,12 +570,19 @@ pub fn attach(ctx: &egui::Context) -> (Control, ControlClient) {
 
 /// What a request needs from the app (implemented by `PdfCraftApp`).
 pub(crate) trait Host {
+    /// Return the UI-state snapshot reported by `ui.state`.
     fn state(&self) -> Value;
+    /// Run one registered command by id and return its reply.
     fn command(&mut self, id: &str) -> Reply;
+    /// Apply or reset the panel docking layout from a control request.
     fn dock(&mut self, reset: bool, params: &Value) -> Reply;
+    /// List the commands available to the control channel.
     fn commands(&self) -> Value;
+    /// Set one application option from a control request.
     fn set(&mut self, key: &str, value: &str) -> Reply;
+    /// Open a document path requested through the control channel.
     fn open(&mut self, path: &str) -> Reply;
+    /// Request application exit; returns whether it closed without asking for confirmation.
     fn quit(&mut self, ctx: &egui::Context) -> bool;
 
     /// A generation that changes when the input target (document, dialog, focus) does.
@@ -760,6 +777,7 @@ impl Control {
         }
     }
 
+    /// Return the total screenshot bytes reserved by pending captures without overflowing.
     fn reserved_bytes(&self) -> usize {
         self.pending
             .iter()
@@ -767,6 +785,7 @@ impl Control {
             .fold(0usize, usize::saturating_add)
     }
 
+    /// Count the screenshot requests still waiting for a capture.
     fn pending_screenshots(&self) -> usize {
         self.pending.iter().filter(|p| matches!(p, Pending::Screenshot { .. })).count()
     }
@@ -807,6 +826,8 @@ impl Control {
         self.pending.push(Pending::Screenshot { slot, callback: Some(callback), region, reply, since, geometry, reserved: bytes, attempts: 0 });
     }
 
+    /// Resolve completed frame and screenshot requests while retaining those that still need a pass or a
+    /// retry.
     fn finish_pending(&mut self, ctx: &egui::Context, host: &mut impl Host) {
         let now = web_time::Instant::now();
         let (dropped, expired, in_pass) = self.take_finished_shared(ctx, host, now);
@@ -878,12 +899,15 @@ impl Control {
         Ok(vec![id])
     }
 
+    /// Queue synthetic input batches and reply only after the requested number of frames has been presented.
     fn after_input(&self, batches: Vec<Vec<egui::Event>>, value: Value, since: web_time::Instant) -> Result<Handled, String> {
         let frames = batches.len() as u32;
         let batches = self.inject(batches, since)?;
         Ok(Handled::AfterInput { batches, frames, value })
     }
 
+    /// Validate and dispatch one control method, rejecting unknown methods and malformed parameters with
+    /// actionable errors.
     fn handle(&mut self, ctx: &egui::Context, host: &mut impl Host, method: &str, p: &Value, since: web_time::Instant) -> Handled {
         let str_param = |k: &str| p.get(k).and_then(Value::as_str).ok_or_else(|| format!("{method}: missing string parameter {k}"));
         let r: Result<Handled, String> = (|| match method {
@@ -1042,6 +1066,7 @@ impl Control {
         self.after_input(frames, json!({ "dragged": [[from.x, from.y], [to.x, to.y]] }), since)
     }
 
+    /// Click at a point, or on an accesskit widget by id or unique enabled label.
     fn click(&mut self, p: &Value, since: web_time::Instant) -> Result<Handled, String> {
         if let (Some(x), Some(y)) = (p.get("x").and_then(Value::as_f64), p.get("y").and_then(Value::as_f64)) {
             let point = |key: &str, n: f64| {
@@ -1092,6 +1117,7 @@ impl Control {
         self.after_input(frames, json!({ "clicked": id.0.to_string(), "label": label }), since)
     }
 
+    /// Focus an accesskit widget by id or unique enabled label.
     fn focus(&mut self, p: &Value, since: web_time::Instant) -> Result<Handled, String> {
         only_params(p, "ui.focus", &["id", "label"])?;
         let s = self.shared.lock().map_err(|_| "control state poisoned")?;
@@ -1318,6 +1344,7 @@ fn screenshot_png(image: &egui::ColorImage, region: Option<egui::Rect>, geometry
 }
 
 impl Host for crate::PdfCraftApp {
+    /// Cancel any in-progress pointer gesture in every open view.
     fn cancel_pointer_gestures(&mut self) {
         for view in &mut self.views {
             view.cancel_pointer_gestures();

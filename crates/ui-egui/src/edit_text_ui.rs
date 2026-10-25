@@ -472,6 +472,7 @@ pub struct ImageSelection {
 }
 
 impl ImageSelection {
+    /// Cancel an in-progress text, rotation or crop drag and restore the crop it was previewing.
     pub(crate) fn cancel_pointer_gesture(&mut self) {
         self.drag = None;
         self.turning = false;

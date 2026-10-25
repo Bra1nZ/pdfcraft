@@ -108,6 +108,7 @@ fn row_label(ui: &mut egui::Ui, text: &str, font: egui::FontId, color: Color32, 
     elided
 }
 
+/// Draw one tool-group row with its icon, label, badge and availability hint.
 fn tool_row(ui: &mut egui::Ui, t: &Tokens, g: &ToolGroup) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 34.0), Sense::click());
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, tl!(g.label)));
@@ -155,6 +156,7 @@ fn tool_row(ui: &mut egui::Ui, t: &Tokens, g: &ToolGroup) -> egui::Response {
     theme::hand(resp).on_hover_text(tip)
 }
 
+/// Draw the detail view for one tool group, dispatching its commands and tool-specific panels.
 fn tool_detail(app: &mut PdfCraftApp, ui: &mut egui::Ui, t: &Tokens, g: &'static ToolGroup) {
     if g.id == "edit" {
         edit_panel(app, ui, t, g);
@@ -654,6 +656,7 @@ pub(crate) enum Nav {
     Flash(usize, [f32; 4]),
 }
 
+/// Draw the selected right-hand panel and apply its navigation, layer, bookmark or edit actions.
 pub fn right_panel(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
     let Some((index, id)) = app.active_ids() else { return };
@@ -1146,6 +1149,7 @@ fn title_format(item: &OutlineItem, depth: usize, t: &Tokens) -> egui::TextForma
     egui::TextFormat { font_id, color, italics: item.italic, ..Default::default() }
 }
 
+/// Draw one bookmark row with expansion, inline rename and the editable context menu.
 fn outline_item(ui: &mut egui::Ui, t: &Tokens, info: &DocInfo, item: &OutlineItem, path: &[usize], siblings: usize, cx: &mut OutlineCtx<'_>) {
     if cx.searching && !cx.matches.contains(path) {
         return;
