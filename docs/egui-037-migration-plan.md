@@ -1,3 +1,15 @@
+# Current integration — 2026-10-25
+
+The local integration includes main `d764a8ebca2dc289841b34ea3048f613a9869bbb` and pins craft-ui, craft-quit and craft-print to published `42e30cd5b3f4b114270dd053fccbc33bedc47f68`. The egui, winit and independent craft-docpath pins are unchanged. Its `Cargo.lock` SHA-256 is `3e0c10576c8584eb1f45a27908177e7c65bb83f8e855bf3a5429edd4e7268c80`.
+
+Main replaced the floating docking workspace with fixed shared side panes in `crates/ui-egui/src/side_panels.rs`. `PaneHost` owns the Tools and inspector columns; `Rail` owns the fixed navigation rail and footer. The integration retains the 0.37 ID, text alignment, capture, IME and accessibility adaptations. The former `docking.rs`, `rail-nav` panel and read-mode inspector panel no longer exist. Floating windows, tab groups and drag/redock operations from the earlier design are not capabilities of this integrated UI. Their historical acceptance items below do not establish current behavior.
+
+Focused scroll, zoom and RTL palette regressions passed. Removing the production fixes while retaining the tests reproduced double scrolling, double zooming and failed reordered-word RTL search; both source files were then restored byte-for-byte. Independent source review accepted the integration. Full combined-tree CI and the separate web WASM check passed with required external oracles: 5,190 passing test executions, zero failures and 22 ignored across 89 summaries. The first attempt stopped at the storage reservation guard; the successful rerun used an increased reservation. These results qualify the current integration, not an earlier checkpoint.
+
+Remaining acceptance includes native/browser GUI, native IME, packaging and paired performance. Shared-pane F6 cycling and explicit RTL edge mirroring are not enabled. New side-pane command labels still need catalog translations; English fallback remains. Current panel checks must exercise Tools/inspector visibility, Read mode, resizing and persistence, rail selection, F4/Shift+F4, capture and accessible Pane/Splitter labels, rather than the removed floating/tab-group workflows.
+
+The qualification tables and original porting protocol below are historical records. Their old pins, lock hashes and docking design describe those checkpoints only; this section supersedes them for the current integration.
+
 > Historical qualification record: the source and lockfile identities below describe earlier migration checkpoints. The current main reconciliation changes workspace versions; its exact source, lockfile hash and validation are recorded in the publication packet. Earlier results do not qualify that combined tree.
 
 # PdfCraft — egui 0.37 porting plan
@@ -12,7 +24,7 @@ The original planning record below is historical.
 
 Status: implemented locally against `a2ec27b4775f53c40cad3456936d9406611e3a8d`; not published. Production code, manifests, vendor provenance and tests in this checkout carry the migration. The 2026-10-25 qualification section below supersedes the historical external-config and missing-IME statements; the 2026-10-24 amendment records the earlier local state. The manifests pin egui `6d518fc799681571963842f95b55a6b68431b15a`, winit `a517b3846ee8457d84ee4975110bfda6797c44dc`, and craft-ui/craft-quit/craft-print `25da1314d443171b4adeaad2cd9454b273f35c6f` directly by immutable git revision, while `craft-docpath` remains at `82a24b006eefa036b43c09a67fb9a3fbd17ffe63`; `Cargo.lock` is `f5cee0acb795240d2071116230316fd4e4b6bfe4e4314c82b0a4ca5459739f80`, and the target-main observation is `a7801dc84e74dd12757aecbb6be324dce7a33939`. The repository quality gates passed as recorded below; publication still requires fresh human approval. This revision also incorporates the independent adversarial review of the prior plan (`f781bf52d03d59cd2fb4539771c7a0d196e2f49e64c48635e72c224c9bdcdcd0`).
 
-## Current qualification state — 2026-10-25
+## Historical qualification state — 2026-10-25
 
 The managed run `egui037-pdfcraft-reviewed-ui-ci-20261025-0541` passed the first nine CI stages, including formatting, strict lint, workspace tests, WASM compilation, assets and dependency checks. It recorded 5,025 passing test executions, zero failures and 16 ignored across 198 summaries (including four focused regression executions). The final parity stage found one stale test reference after the Arabic logical-order test was renamed; the reference was corrected without changing executable source. Formatting and parity then passed in `egui037-pdfcraft-parity-final-20261025-0555`. An intervening submission `0553` was refused by the storage guard before execution and is not validation evidence. Final documentation/attribution corrections were checked by formatting, assets generation/validation and parity in `egui037-pdfcraft-final-doc-assets-20261025-0571`.
 
@@ -137,7 +149,7 @@ egui 0.37 removes `Event::Screenshot` and changes `ViewportCommand::Screenshot` 
 
 `Shared::passes` is a pass counter, not a frame counter. The migration renames the unit to accepted frames and increments it in `output_hook` only when `output.platform_output.request_discard_reasons.is_empty()`; an intermediate discarded pass does not count. A request made before a forced discard is not answered before the intended number of accepted frames.
 
-### 2.6 Panels, docking and window chrome
+### 2.6 Panels, docking and window chrome (planning baseline)
 
 PdfCraft uses the 0.37 `Panel` API already in its 0.36 form:
 
@@ -344,6 +356,9 @@ Keep the existing `eframe::App` hooks. Adding a private phase type is allowed on
 
 ### 6.2 Panels, docking and persistence
 
+Current integration note: the shared side panes and rail described at the top supersede the former docking and panel layout below. Retain historical requirements as context, not as claims of implemented capabilities.
+
+
 The first compatibility PR implements an actual one-time panel-key migration. For each of `"tab_strip"`, `"mode_bar"`, `"rail"`, `"rail-nav"` and `"read_right_panel"`:
 
 - old key (0.36): `Id::new(salt)`;
@@ -411,6 +426,9 @@ Adopt E14 for fallbacks: set `FontTweak::fallback_align = FallbackAlign::Baselin
 
 ### 6.6 Language and RTL
 
+Current integration note: the shared side panes and rail described at the top supersede the former docking and panel layout below. Retain historical requirements as context, not as claims of implemented capabilities.
+
+
 End state:
 
 - `logic` resolves the language and calls `frame.set_ui_language(Some(code))` (E18), setting `Context::language` (E17).
@@ -430,6 +448,9 @@ End state:
 - Text copy/paste stays on egui events; keep `arboard` for image/file clipboard. Enable eframe `clipboard` for native builds. PRIMARY uses W15P: keyboard-only focus, serial freshness, owner/seat changes, empty/absent offers, self-paste, canceled/slow transfers, password exclusion and no unchanged-selection reclaim. Native evidence on wlroots/KWin/Mutter. No second regular data device.
 
 ### 6.8 Accessibility
+
+Current integration note: the shared side panes and rail described at the top supersede the former docking and panel layout below. Retain historical requirements as context, not as claims of implemented capabilities.
+
 
 - Map every `WidgetInfo` role explicitly (`Role::TextInput`, `Role::CheckBox`, etc.).
 - Add accessible names to every input widget. 0.37 kittest fails unnamed inputs; use `labelled_by`, `Ui::label_inputs_by`, `Ui::name_inputs` or `Response::accessible_name`.

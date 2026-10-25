@@ -19,6 +19,11 @@ struct Hit {
 
 /// Where `needle` (folded with [`pdfcraft_render::text::fold_case`]) matches `hay`, for ranking.
 fn score(hay: &str, needle: &str) -> Option<usize> {
+    score_for_direction(hay, needle, crate::i18n::current().rtl())
+}
+
+/// Rank logical text, accepting reordered query words for right-to-left locales.
+fn score_for_direction(hay: &str, needle: &str, rtl: bool) -> Option<usize> {
     if needle.is_empty() {
         return Some(0);
     }
@@ -26,8 +31,13 @@ fn score(hay: &str, needle: &str) -> Option<usize> {
     if let Some(p) = h.find(needle) {
         return Some(p);
     }
-    // Catalog labels and the query are both logical text; the shaper reorders only at paint
-    // time, so a phrase match above is already correct for right-to-left languages.
+    // Match the all-tools search: RTL queries may name the same words in another order.
+    if rtl && needle.contains(char::is_whitespace) {
+        let first = needle.split_whitespace().try_fold(usize::MAX, |first, word| h.find(word).map(|at| first.min(at)));
+        if let Some(first) = first {
+            return Some(first);
+        }
+    }
     // Subsequence match as a fallback.
     let mut it = h.chars();
     needle.chars().all(|c| it.any(|x| x == c)).then_some(100)
@@ -223,8 +233,19 @@ pub fn show(app: &mut PdfCraftApp, ctx: &egui::Context) {
 
 #[cfg(test)]
 mod search {
-    use super::score;
+    use super::{score, score_for_direction};
     use pdfcraft_render::text::fold_case;
+
+    /// Word-order tolerance is RTL-only and still requires every requested word.
+    #[test]
+    fn rtl_palette_queries_accept_reordered_words_without_reversing_text() {
+        let label = "تنظيم الصفحات";
+        assert_eq!(score_for_direction(label, &fold_case("الصفحات تنظيم"), true), Some(0));
+        assert_eq!(score_for_direction(label, &fold_case("تنظيم الصفحات"), true), Some(0));
+        assert_eq!(score_for_direction(label, &fold_case("الصفحات مفقود"), true), None);
+        assert_eq!(score_for_direction(label, &fold_case("الصفحات تنظيم"), false), None);
+        assert_eq!(score_for_direction("Organize Pages", &fold_case("Pages Organize"), false), None);
+    }
 
     #[test]
     fn commands_match_in_any_case_with_turkish_i() {
