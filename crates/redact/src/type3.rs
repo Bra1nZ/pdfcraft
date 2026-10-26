@@ -557,7 +557,6 @@ fn clean_type3_font(
     let Some(char_procs_val) = font_dict.get(b"CharProcs") else {
         return Err(CosError::Syntax { offset: 0, detail: "redaction could not establish safe Type 3 font cleanup: missing CharProcs".into() }.into());
     };
-    let char_procs_ref = char_procs_val.as_ref();
     let mut char_procs = doc.resolve(char_procs_val).as_dict().cloned().ok_or_else(|| CosError::Syntax {
         offset: 0,
         detail: "redaction could not establish safe Type 3 font cleanup: CharProcs is not a dict".into(),
@@ -572,20 +571,23 @@ fn clean_type3_font(
         }
     }
 
+    let FontKey::Ref(fr) = font_key;
     if char_procs.is_empty() {
-        // The font has no surviving glyphs: remove font from /Font across all holders.
+        // The font has no surviving glyphs: clear its own glyph programs and resources, then
+        // remove font from /Font across all holders.
+        doc.update_dict(*fr, |d| {
+            d.remove(b"CharProcs");
+            d.remove(b"Resources");
+        })?;
         return remove_font_from_holders(doc, holders, form_holders, font_key);
     }
 
-    let FontKey::Ref(fr) = font_key;
+    // A CharProcs object can be shared with another Type 3 font, so never rewrite it in place:
+    // give this font its own filtered dictionary instead.
     if procs_changed {
-        if let Some(r) = char_procs_ref {
-            doc.update_dict(r, |d| *d = char_procs.clone())?;
-        } else {
-            doc.update_dict(*fr, |d| {
-                d.set(b"CharProcs".to_vec(), Object::Dict(char_procs.clone()));
-            })?;
-        }
+        doc.update_dict(*fr, |d| {
+            d.set(b"CharProcs".to_vec(), Object::Dict(char_procs.clone()));
+        })?;
     }
 
     // Clean exclusive resources from the Type 3 font's /Resources.
