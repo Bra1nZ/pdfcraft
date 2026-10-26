@@ -257,3 +257,44 @@ fn unparseable_type3_font_encoding_fails_closed() {
     let res = apply(&mut doc, None);
     assert!(res.is_err(), "redaction must fail closed when Type 3 cleanup cannot be established: {res:?}");
 }
+
+/// A Type 3 font selected through an ExtGState /Font entry is a use of the font for pruning:
+/// its redacted glyph program does not survive a full save (F-011).
+#[test]
+fn type3_font_set_through_extgstate_has_its_redacted_glyph_removed() {
+    let mut doc = pdf(vec![
+        b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] /Contents 4 0 R /Resources 5 0 R >>".to_vec(),
+        stream("", b"/GS1 gs BT 10 100 Td (A) Tj ET"),
+        b"<< /Font << /T3 6 0 R >> /ExtGState << /GS1 8 0 R >> >>".to_vec(),
+        b"<< /Type /Font /Subtype /Type3 /FontBBox [0 -200 1000 800] /FontMatrix [0.001 0 0 0.001 0 0] /FirstChar 65 /LastChar 65 /Widths [500] /Encoding << /Differences [65 /A] >> /CharProcs << /A 7 0 R >> >>".to_vec(),
+        stream("", b"% SECRET_EXTGSTATE_GLYPH_PAYLOAD"),
+        b"<< /Type /ExtGState /Font [6 0 R 10] >>".to_vec(),
+    ]);
+    mark(&mut doc, 0, &[[9.0, 95.0, 16.0, 110.0]], "");
+    let report = apply(&mut doc, None).unwrap();
+    assert_eq!(report.glyphs, 1);
+    assert!(!full_save_holds(&doc, b"SECRET_EXTGSTATE_GLYPH_PAYLOAD"), "redacted glyph program survived");
+}
+
+/// A Type 3 font used only inside a Form XObject is found by the scan and its redacted glyph
+/// program does not survive a full save (F-011).
+#[test]
+fn type3_font_used_in_a_form_xobject_has_its_redacted_glyph_removed() {
+    let mut doc = pdf(vec![
+        b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] /Contents 4 0 R /Resources 5 0 R >>".to_vec(),
+        stream("", b"/Fm Do"),
+        b"<< /XObject << /Fm 8 0 R >> >>".to_vec(),
+        b"<< /Type /Font /Subtype /Type3 /FontBBox [0 -200 1000 800] /FontMatrix [0.001 0 0 0.001 0 0] /FirstChar 65 /LastChar 65 /Widths [500] /Encoding << /Differences [65 /A] >> /CharProcs << /A 7 0 R >> >>".to_vec(),
+        stream("", b"% SECRET_FORM_GLYPH_PAYLOAD"),
+        stream("/Type /XObject /Subtype /Form /BBox [0 0 300 300] /Resources 9 0 R", b"BT /T3 10 Tf 10 100 Td (A) Tj ET"),
+        b"<< /Font << /T3 6 0 R >> >>".to_vec(),
+    ]);
+    mark(&mut doc, 0, &[[9.0, 95.0, 16.0, 110.0]], "");
+    let report = apply(&mut doc, None).unwrap();
+    assert_eq!(report.glyphs, 1);
+    assert!(!full_save_holds(&doc, b"SECRET_FORM_GLYPH_PAYLOAD"), "redacted glyph program survived");
+}
