@@ -253,41 +253,49 @@ fn scan_content_stream(
                     current_font = saved;
                 }
             }
-            b"Tf" => {
-                if let Some(name) = op.name(0) {
-                    current_font = resolve_font_in_res(ctx.doc, res, name).map(|(k, _)| k);
-                }
-            }
-            b"gs" => {
-                if let Some(name) = op.name(0)
-                    && let Some((k, _)) = resolve_extgstate_font(ctx.doc, res, name)
-                {
-                    current_font = Some(k);
-                }
-            }
-            b"Tj" | b"'" | b"\"" => {
-                if let Some(s) = op.operands.last().and_then(Object::as_string) {
-                    mark_shown(ctx, current_font, &s.bytes);
-                }
-            }
-            b"TJ" => {
-                if let Some(arr) = op.operands.last().and_then(Object::as_array) {
-                    for item in arr {
-                        if let Some(s) = item.as_string() {
-                            mark_shown(ctx, current_font, &s.bytes);
-                        }
-                    }
-                }
-            }
             b"Do" => {
                 if let Some(name) = op.last_name() {
                     scan_xobject(ctx, res, holder_ref, name, current_font, depth)?;
                 }
             }
-            _ => {}
+            _ => apply_text_op(ctx, res, &op, &mut current_font),
         }
     }
     Ok(())
+}
+
+/// Apply an operator that changes or uses the current font: `Tf`, `gs`, and the text-showing
+/// operators, which record the glyphs they draw.
+fn apply_text_op(ctx: &mut ScanContext<'_>, res: &Dict, op: &pdfcraft_content::Op, current_font: &mut Option<FontKey>) {
+    match op.op.as_slice() {
+        b"Tf" => {
+            if let Some(name) = op.name(0) {
+                *current_font = resolve_font_in_res(ctx.doc, res, name).map(|(k, _)| k);
+            }
+        }
+        b"gs" => {
+            if let Some(name) = op.name(0)
+                && let Some((k, _)) = resolve_extgstate_font(ctx.doc, res, name)
+            {
+                *current_font = Some(k);
+            }
+        }
+        b"Tj" | b"'" | b"\"" => {
+            if let Some(s) = op.operands.last().and_then(Object::as_string) {
+                mark_shown(ctx, *current_font, &s.bytes);
+            }
+        }
+        b"TJ" => {
+            if let Some(arr) = op.operands.last().and_then(Object::as_array) {
+                for item in arr {
+                    if let Some(s) = item.as_string() {
+                        mark_shown(ctx, *current_font, &s.bytes);
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Record every glyph of `font` that the shown string `bytes` uses.
@@ -330,6 +338,13 @@ fn scan_xobject(
     }
 }
 
+/// The font object an ExtGState's `/Font` entry names (its first element), if any.
+fn gs_font_object(doc: &Document, state_obj: &Object) -> Option<Object> {
+    let state = doc.resolve(state_obj).as_dict()?.clone();
+    let font_entry = doc.resolve(state.get(b"Font")?).as_array()?.clone();
+    font_entry.into_iter().next()
+}
+
 /// Prune Type 3 fonts from a rewritten page or form's `/Resources` dictionary if the rewritten
 /// content no longer draws any text using that font name.
 pub(crate) fn prune_type3_from_resources(doc: &Document, res: &mut Dict, content: &[Vec<u8>]) -> Result<(), CosError> {
@@ -352,16 +367,8 @@ pub(crate) fn prune_type3_from_resources(doc: &Document, res: &mut Dict, content
             && let Some(name) = op.name(0)
         {
             let extg = res_dict(doc, res, b"ExtGState");
-            if let Some(state_obj) = extg.get(name)
-                && let Some(state) = doc.resolve(state_obj).as_dict()
-                && let Some(font_entry) = doc.resolve(state.get(b"Font").unwrap_or(&Object::Null)).as_array()
-                && let Some(font_obj) = font_entry.first()
-            {
-                for (fn_name, fn_obj) in fonts.iter() {
-                    if fn_obj == font_obj || (fn_obj.as_ref().is_some() && fn_obj.as_ref() == font_obj.as_ref()) {
-                        drawn_font_names.insert(fn_name.to_vec());
-                    }
-                }
+            if let Some(font_obj) = extg.get(name).and_then(|state_obj| gs_font_object(doc, state_obj)) {
+                drawn_font_names.extend(fonts.iter().filter(|(_, fn_obj)| fn_obj.as_ref().is_some() && fn_obj.as_ref() == font_obj.as_ref()).map(|(fn_name, _)| fn_name.to_vec()));
             }
         }
     }
@@ -423,73 +430,17 @@ pub(crate) fn unlink_type3(doc: &mut Document) -> Result<(), RedactError> {
         }
     }
 
-    // Find all reachable Form XObjects with resources of their own.
-    let mut form_holders: Vec<(ObjRef, Dict)> = Vec::new();
-    let mut pending_res: Vec<Dict> = holders
-        .iter()
-        .filter_map(|(r, _)| doc.get(*r).as_dict().and_then(|d| d.get(b"Resources")).and_then(|ro| doc.resolve(ro).as_dict().cloned()))
-        .collect();
-    let mut seen_forms = HashSet::new();
-    while let Some(res) = pending_res.pop() {
-        for (_, value) in res_dict(doc, &res, b"XObject").iter() {
-            let Some(reference) = value.as_ref() else { continue };
-            if !seen_forms.insert(reference) {
-                continue;
-            }
-            if seen_forms.len() > MAX_HOLDERS {
-                return Err(CosError::Syntax { offset: 0, detail: "redaction exceeded max depth inspecting form resources".into() }.into());
-            }
-            let object = doc.get(reference);
-            let Object::Stream(form) = &*object else { continue };
-            if form.dict.name(b"Subtype") != Some(b"Form") {
-                continue;
-            }
-            if let Some(r) = form.dict.get(b"Resources").and_then(|ro| doc.resolve(ro).as_dict().cloned()) {
-                form_holders.push((reference, r.clone()));
-                pending_res.push(r);
-            }
-        }
-    }
+    let form_holders = reachable_form_holders(doc, &holders)?;
 
     // Discover all Type 3 fonts in holders and forms.
     let mut type3_fonts: HashMap<FontKey, Dict> = HashMap::new();
-    // A Type 3 font held directly in a resource dictionary can neither be named reliably nor have its
-    // glyph programs rewritten, so redaction fails closed rather than leaving its glyphs unchecked.
-    let direct = || CosError::Syntax {
-        offset: 0,
-        detail: "redaction could not establish safe Type 3 font cleanup: a Type 3 font is not an indirect object".into(),
-    };
-    let check_res_fonts = |doc: &Document, res: &Dict, t3_fonts: &mut HashMap<FontKey, Dict>| -> Result<(), CosError> {
-        let mut consider = |font_obj: &Object| -> Result<(), CosError> {
-            if let Some(dict) = doc.resolve(font_obj).as_dict().cloned()
-                && dict.name(b"Subtype") == Some(b"Type3")
-            {
-                let font_ref = font_obj.as_ref().ok_or_else(direct)?;
-                t3_fonts.entry(FontKey::Ref(font_ref)).or_insert(dict);
-            }
-            Ok(())
-        };
-        for (_, font_obj) in res_dict(doc, res, b"Font").iter() {
-            consider(font_obj)?;
-        }
-        for (_, state_obj) in res_dict(doc, res, b"ExtGState").iter() {
-            if let Some(state) = doc.resolve(state_obj).as_dict()
-                && let Some(font_arr) = doc.resolve(state.get(b"Font").unwrap_or(&Object::Null)).as_array()
-                && let Some(font_obj) = font_arr.first()
-            {
-                consider(font_obj)?;
-            }
-        }
-        Ok(())
-    };
-
     for (node, _) in &holders {
         if let Some(res) = doc.get(*node).as_dict().and_then(|d| d.get(b"Resources")).and_then(|r| doc.resolve(r).as_dict().cloned()) {
-            check_res_fonts(doc, &res, &mut type3_fonts)?;
+            collect_type3_fonts(doc, &res, &mut type3_fonts)?;
         }
     }
     for (_, form_res) in &form_holders {
-        check_res_fonts(doc, form_res, &mut type3_fonts)?;
+        collect_type3_fonts(doc, form_res, &mut type3_fonts)?;
     }
 
     if type3_fonts.is_empty() {
@@ -541,6 +492,66 @@ pub(crate) fn unlink_type3(doc: &mut Document) -> Result<(), RedactError> {
         clean_type3_font(doc, &holders, &form_holders, font_key, font_dict, &surviving)?;
     }
 
+    Ok(())
+}
+
+/// Every reachable Form XObject with resources of its own, with those resources, found by
+/// walking the resources of the holders and of the forms they draw.
+fn reachable_form_holders(doc: &Document, holders: &[(ObjRef, Vec<ObjRef>)]) -> Result<Vec<(ObjRef, Dict)>, CosError> {
+    let mut form_holders: Vec<(ObjRef, Dict)> = Vec::new();
+    let mut pending_res: Vec<Dict> = holders
+        .iter()
+        .filter_map(|(r, _)| doc.get(*r).as_dict().and_then(|d| d.get(b"Resources")).and_then(|ro| doc.resolve(ro).as_dict().cloned()))
+        .collect();
+    let mut seen_forms = HashSet::new();
+    while let Some(res) = pending_res.pop() {
+        for (_, value) in res_dict(doc, &res, b"XObject").iter() {
+            let Some(reference) = value.as_ref() else { continue };
+            if !seen_forms.insert(reference) {
+                continue;
+            }
+            if seen_forms.len() > MAX_HOLDERS {
+                return Err(CosError::Syntax { offset: 0, detail: "redaction exceeded max depth inspecting form resources".into() });
+            }
+            let object = doc.get(reference);
+            let Object::Stream(form) = &*object else { continue };
+            if form.dict.name(b"Subtype") != Some(b"Form") {
+                continue;
+            }
+            if let Some(r) = form.dict.get(b"Resources").and_then(|ro| doc.resolve(ro).as_dict().cloned()) {
+                form_holders.push((reference, r.clone()));
+                pending_res.push(r);
+            }
+        }
+    }
+    Ok(form_holders)
+}
+
+/// Record every Type 3 font named by a resource dictionary's `/Font` and `/ExtGState` entries.
+/// A Type 3 font held directly in a resource dictionary can neither be named reliably nor have its
+/// glyph programs rewritten, so redaction fails closed rather than leaving its glyphs unchecked.
+fn collect_type3_fonts(doc: &Document, res: &Dict, t3_fonts: &mut HashMap<FontKey, Dict>) -> Result<(), CosError> {
+    let direct = || CosError::Syntax {
+        offset: 0,
+        detail: "redaction could not establish safe Type 3 font cleanup: a Type 3 font is not an indirect object".into(),
+    };
+    let mut consider = |font_obj: &Object| -> Result<(), CosError> {
+        if let Some(dict) = doc.resolve(font_obj).as_dict().cloned()
+            && dict.name(b"Subtype") == Some(b"Type3")
+        {
+            let font_ref = font_obj.as_ref().ok_or_else(direct)?;
+            t3_fonts.entry(FontKey::Ref(font_ref)).or_insert(dict);
+        }
+        Ok(())
+    };
+    for (_, font_obj) in res_dict(doc, res, b"Font").iter() {
+        consider(font_obj)?;
+    }
+    for (_, state_obj) in res_dict(doc, res, b"ExtGState").iter() {
+        if let Some(font_obj) = gs_font_object(doc, state_obj) {
+            consider(&font_obj)?;
+        }
+    }
     Ok(())
 }
 
