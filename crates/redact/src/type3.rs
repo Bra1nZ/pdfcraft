@@ -368,7 +368,12 @@ pub(crate) fn prune_type3_from_resources(doc: &Document, res: &mut Dict, content
         {
             let extg = res_dict(doc, res, b"ExtGState");
             if let Some(font_obj) = extg.get(name).and_then(|state_obj| gs_font_object(doc, state_obj)) {
-                drawn_font_names.extend(fonts.iter().filter(|(_, fn_obj)| fn_obj.as_ref().is_some() && fn_obj.as_ref() == font_obj.as_ref()).map(|(fn_name, _)| fn_name.to_vec()));
+                drawn_font_names.extend(
+                    fonts
+                        .iter()
+                        .filter(|(_, fn_obj)| fn_obj.as_ref().is_some() && fn_obj.as_ref() == font_obj.as_ref())
+                        .map(|(fn_name, _)| fn_name.to_vec()),
+                );
             }
         }
     }
