@@ -1,6 +1,6 @@
 //! Predefined font encodings (ISO 32000 Annex D) mapping character codes to glyph names.
 
-pub(crate) static STANDARD: [Option<&'static [u8]>; 256] = [
+pub(crate) static STANDARD: [Option<&[u8]>; 256] = [
     None,
     None,
     None,
@@ -259,7 +259,7 @@ pub(crate) static STANDARD: [Option<&'static [u8]>; 256] = [
     None,
 ];
 
-pub(crate) static WIN_ANSI: [Option<&'static [u8]>; 256] = [
+pub(crate) static WIN_ANSI: [Option<&[u8]>; 256] = [
     None,
     None,
     None,
@@ -518,7 +518,7 @@ pub(crate) static WIN_ANSI: [Option<&'static [u8]>; 256] = [
     Some(b"ydieresis"),
 ];
 
-pub(crate) static MAC_ROMAN: [Option<&'static [u8]>; 256] = [
+pub(crate) static MAC_ROMAN: [Option<&[u8]>; 256] = [
     None,
     None,
     None,
@@ -777,7 +777,7 @@ pub(crate) static MAC_ROMAN: [Option<&'static [u8]>; 256] = [
     Some(b"caron"),
 ];
 
-pub(crate) static MAC_EXPERT: [Option<&'static [u8]>; 256] = [
+pub(crate) static MAC_EXPERT: [Option<&[u8]>; 256] = [
     None,
     None,
     None,

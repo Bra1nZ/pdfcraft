@@ -261,74 +261,69 @@ fn scan_content_stream(
                     current_font = Some(k);
                 }
             }
-            b"Tj" | b"'" => {
-                if let Some(fk) = current_font
-                    && let Some(map) = ctx.font_maps.get(&fk)
-                    && let Some(s) = op.operands.last().and_then(Object::as_string)
-                {
-                    for b in &s.bytes {
-                        if let Some(g) = &map[*b as usize] {
-                            ctx.used_glyphs.entry(fk).or_default().insert(g.clone());
-                        }
-                    }
+            b"Tj" | b"'" | b"\"" => {
+                if let Some(s) = op.operands.last().and_then(Object::as_string) {
+                    mark_shown(ctx, current_font, &s.bytes);
                 }
             }
             b"TJ" => {
-                if let Some(fk) = current_font
-                    && let Some(map) = ctx.font_maps.get(&fk)
-                    && let Some(arr) = op.operands.last().and_then(Object::as_array)
-                {
+                if let Some(arr) = op.operands.last().and_then(Object::as_array) {
                     for item in arr {
                         if let Some(s) = item.as_string() {
-                            for b in &s.bytes {
-                                if let Some(g) = &map[*b as usize] {
-                                    ctx.used_glyphs.entry(fk).or_default().insert(g.clone());
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            b"\"" => {
-                if let Some(fk) = current_font
-                    && let Some(map) = ctx.font_maps.get(&fk)
-                    && let Some(s) = op.operands.last().and_then(Object::as_string)
-                {
-                    for b in &s.bytes {
-                        if let Some(g) = &map[*b as usize] {
-                            ctx.used_glyphs.entry(fk).or_default().insert(g.clone());
+                            mark_shown(ctx, current_font, &s.bytes);
                         }
                     }
                 }
             }
             b"Do" => {
                 if let Some(name) = op.last_name() {
-                    let xo = res_dict(ctx.doc, res, b"XObject");
-                    if let Some(r) = xo.get(name).and_then(Object::as_ref) {
-                        let obj = ctx.doc.get(r);
-                        if let Object::Stream(s) = &*obj
-                            && s.dict.name(b"Subtype") == Some(b"Form")
-                        {
-                            let form_own_res = s.dict.get(b"Resources").and_then(|ro| ctx.doc.resolve(ro).as_dict().cloned());
-                            // A form with resources of its own draws through them; one without draws
-                            // through its caller's.
-                            let through = if form_own_res.is_some() { r } else { holder_ref };
-                            if !ctx.seen_forms.insert((r, current_font, through)) {
-                                continue;
-                            }
-                            let data = s.decoded()?;
-                            match form_own_res {
-                                Some(form_res) => scan_content_stream(ctx, std::slice::from_ref(&data), r, &form_res, current_font, depth + 1)?,
-                                None => scan_content_stream(ctx, std::slice::from_ref(&data), holder_ref, res, current_font, depth + 1)?,
-                            }
-                        }
-                    }
+                    scan_xobject(ctx, res, holder_ref, name, current_font, depth)?;
                 }
             }
             _ => {}
         }
     }
     Ok(())
+}
+
+/// Record every glyph of `font` that the shown string `bytes` uses.
+fn mark_shown(ctx: &mut ScanContext<'_>, font: Option<FontKey>, bytes: &[u8]) {
+    let Some(fk) = font else { return };
+    let Some(map) = ctx.font_maps.get(&fk) else { return };
+    for b in bytes {
+        if let Some(g) = &map[*b as usize] {
+            ctx.used_glyphs.entry(fk).or_default().insert(g.clone());
+        }
+    }
+}
+
+/// Scan the Form XObject `name` drawn by a `Do` operator, once per (form, font, drawing holder).
+fn scan_xobject(
+    ctx: &mut ScanContext<'_>,
+    res: &Dict,
+    holder_ref: ObjRef,
+    name: &[u8],
+    current_font: Option<FontKey>,
+    depth: usize,
+) -> Result<(), CosError> {
+    let xo = res_dict(ctx.doc, res, b"XObject");
+    let Some(r) = xo.get(name).and_then(Object::as_ref) else { return Ok(()) };
+    let obj = ctx.doc.get(r);
+    let Object::Stream(s) = &*obj else { return Ok(()) };
+    if s.dict.name(b"Subtype") != Some(b"Form") {
+        return Ok(());
+    }
+    let form_own_res = s.dict.get(b"Resources").and_then(|ro| ctx.doc.resolve(ro).as_dict().cloned());
+    // A form with resources of its own draws through them; one without draws through its caller's.
+    let through = if form_own_res.is_some() { r } else { holder_ref };
+    if !ctx.seen_forms.insert((r, current_font, through)) {
+        return Ok(());
+    }
+    let data = s.decoded()?;
+    match form_own_res {
+        Some(form_res) => scan_content_stream(ctx, std::slice::from_ref(&data), r, &form_res, current_font, depth + 1),
+        None => scan_content_stream(ctx, std::slice::from_ref(&data), holder_ref, res, current_font, depth + 1),
+    }
 }
 
 /// Prune Type 3 fonts from a rewritten page or form's `/Resources` dictionary if the rewritten
@@ -539,75 +534,85 @@ pub(crate) fn unlink_type3(doc: &mut Document) -> Result<(), RedactError> {
     // For each Type 3 font: unlink unused glyphs from CharProcs and prune exclusive resources.
     for (font_key, font_dict) in &type3_fonts {
         let surviving = used_glyphs.get(font_key).cloned().unwrap_or_default();
-        let Some(char_procs_val) = font_dict.get(b"CharProcs") else {
-            return Err(
-                CosError::Syntax { offset: 0, detail: "redaction could not establish safe Type 3 font cleanup: missing CharProcs".into() }.into()
-            );
-        };
-        let char_procs_ref = char_procs_val.as_ref();
-        let mut char_procs = doc.resolve(char_procs_val).as_dict().cloned().ok_or_else(|| CosError::Syntax {
-            offset: 0,
-            detail: "redaction could not establish safe Type 3 font cleanup: CharProcs is not a dict".into(),
-        })?;
+        clean_type3_font(doc, &holders, &form_holders, font_key, font_dict, &surviving)?;
+    }
 
-        let mut procs_changed = false;
-        let glyph_names: Vec<Vec<u8>> = char_procs.iter().map(|(n, _)| n.to_vec()).collect();
-        for g in glyph_names {
-            if !surviving.contains(&g) {
-                char_procs.remove(&g);
-                procs_changed = true;
-            }
-        }
+    Ok(())
+}
 
-        if char_procs.is_empty() {
-            // The font has no surviving glyphs: remove font from /Font across all holders.
-            remove_font_from_holders(doc, &holders, &form_holders, font_key)?;
-        } else {
-            if procs_changed {
-                let FontKey::Ref(fr) = font_key;
-                if let Some(r) = char_procs_ref {
-                    doc.update_dict(r, |d| *d = char_procs.clone())?;
-                } else {
-                    doc.update_dict(*fr, |d| {
-                        d.set(b"CharProcs".to_vec(), Object::Dict(char_procs.clone()));
-                    })?;
-                }
-            }
+/// Unlink the glyph programs of one Type 3 font that no longer draw, then either remove the font
+/// (when no glyph survives) or prune the resources only its surviving glyphs used.
+fn clean_type3_font(
+    doc: &mut Document,
+    holders: &[(ObjRef, Vec<ObjRef>)],
+    form_holders: &[(ObjRef, Dict)],
+    font_key: &FontKey,
+    font_dict: &Dict,
+    surviving: &HashSet<Vec<u8>>,
+) -> Result<(), RedactError> {
+    let Some(char_procs_val) = font_dict.get(b"CharProcs") else {
+        return Err(CosError::Syntax { offset: 0, detail: "redaction could not establish safe Type 3 font cleanup: missing CharProcs".into() }.into());
+    };
+    let char_procs_ref = char_procs_val.as_ref();
+    let mut char_procs = doc.resolve(char_procs_val).as_dict().cloned().ok_or_else(|| CosError::Syntax {
+        offset: 0,
+        detail: "redaction could not establish safe Type 3 font cleanup: CharProcs is not a dict".into(),
+    })?;
 
-            // Clean exclusive resources from the Type 3 font's /Resources.
-            if let Some(f_res_val) = font_dict.get(b"Resources") {
-                let mut f_res = doc.resolve(f_res_val).as_dict().cloned().unwrap_or_default();
-
-                let mut used_in_glyphs = UsedInGlyphs::default();
-                for (_, proc_val) in char_procs.iter() {
-                    let resolved = doc.resolve(proc_val);
-                    let Object::Stream(s) = &*resolved else {
-                        return Err(CosError::Syntax {
-                            offset: 0,
-                            detail: "redaction could not establish safe Type 3 font cleanup: CharProc is not a stream".into(),
-                        }
-                        .into());
-                    };
-                    let data = s.decoded()?;
-                    collect_used_resources_in_stream(&data, &mut used_in_glyphs)?;
-                }
-
-                if prune_type3_font_resources(doc, &mut f_res, &used_in_glyphs) {
-                    // The pruned dictionary goes into the font object: a font's /Resources object is
-                    // often the page's own, and rewriting that would strip the page of its resources.
-                    let FontKey::Ref(fr) = font_key;
-                    doc.update_dict(*fr, |d| {
-                        if f_res.is_empty() {
-                            d.remove(b"Resources");
-                        } else {
-                            d.set(b"Resources".to_vec(), Object::Dict(f_res.clone()));
-                        }
-                    })?;
-                }
-            }
+    let mut procs_changed = false;
+    let glyph_names: Vec<Vec<u8>> = char_procs.iter().map(|(n, _)| n.to_vec()).collect();
+    for g in glyph_names {
+        if !surviving.contains(&g) {
+            char_procs.remove(&g);
+            procs_changed = true;
         }
     }
 
+    if char_procs.is_empty() {
+        // The font has no surviving glyphs: remove font from /Font across all holders.
+        return remove_font_from_holders(doc, holders, form_holders, font_key);
+    }
+
+    let FontKey::Ref(fr) = font_key;
+    if procs_changed {
+        if let Some(r) = char_procs_ref {
+            doc.update_dict(r, |d| *d = char_procs.clone())?;
+        } else {
+            doc.update_dict(*fr, |d| {
+                d.set(b"CharProcs".to_vec(), Object::Dict(char_procs.clone()));
+            })?;
+        }
+    }
+
+    // Clean exclusive resources from the Type 3 font's /Resources.
+    let Some(f_res_val) = font_dict.get(b"Resources") else { return Ok(()) };
+    let mut f_res = doc.resolve(f_res_val).as_dict().cloned().unwrap_or_default();
+
+    let mut used_in_glyphs = UsedInGlyphs::default();
+    for (_, proc_val) in char_procs.iter() {
+        let resolved = doc.resolve(proc_val);
+        let Object::Stream(s) = &*resolved else {
+            return Err(CosError::Syntax {
+                offset: 0,
+                detail: "redaction could not establish safe Type 3 font cleanup: CharProc is not a stream".into(),
+            }
+            .into());
+        };
+        let data = s.decoded()?;
+        collect_used_resources_in_stream(&data, &mut used_in_glyphs)?;
+    }
+
+    if prune_type3_font_resources(doc, &mut f_res, &used_in_glyphs) {
+        // The pruned dictionary goes into the font object: a font's /Resources object is
+        // often the page's own, and rewriting that would strip the page of its resources.
+        doc.update_dict(*fr, |d| {
+            if f_res.is_empty() {
+                d.remove(b"Resources");
+            } else {
+                d.set(b"Resources".to_vec(), Object::Dict(f_res.clone()));
+            }
+        })?;
+    }
     Ok(())
 }
 
