@@ -356,6 +356,47 @@ fn undo_past_a_security_save_keeps_earlier_saves_of_the_same_security() {
     }
 }
 
+/// Security-aware undo saves still strip typed Password-field values, both when writing onto
+/// the snapshot's source and when overlaying it onto an earlier compatible save (#3276, #3926).
+#[test]
+fn undo_past_a_security_save_keeps_password_field_values_out_of_the_file() {
+    let mut form = CosDocument::open(Arc::new(form_fixture())).unwrap();
+    form.update_dict(pdfcraft_cos::ObjRef::new(4, 0), |d| d.set(b"Ff".to_vec(), Object::Int(8192))).unwrap();
+    let original = Arc::new(write_full(&form, &SaveOptions::default()).unwrap());
+    for earlier_save in [false, true] {
+        let mut s = Session::new();
+        let id = s.open("form.pdf", None, original.clone(), None).unwrap();
+        s.apply(id, Edit::SetFieldValue { name: "name".into(), value: FieldValue::Text("hunter2".into()) }).unwrap();
+        let target = if earlier_save {
+            s.apply(id, Edit::RotatePages { pages: vec![0], degrees: 90 }).unwrap();
+            let saved = s.save_bytes(id).unwrap();
+            s.mark_saved(id, saved.clone(), None).unwrap();
+            saved
+        } else {
+            original.clone()
+        };
+        s.apply(id, Edit::Protect(protection(Some("user"), Some("owner")))).unwrap();
+        let protected = s.save_bytes(id).unwrap();
+        s.mark_saved(id, protected, None).unwrap();
+        s.undo(id).unwrap();
+        if earlier_save {
+            s.undo(id).unwrap();
+        }
+        let value = |s: &Session| s.get(id).unwrap().form.iter().find(|f| f.name == "name").unwrap().value.clone();
+        assert_eq!(value(&s), ["hunter2"], "undo restores the typed value in memory");
+        let restored = s.save_bytes(id).unwrap();
+        s.check_save(id, &restored).unwrap();
+        assert!(restored.starts_with(&target) && restored.len() > target.len(), "{earlier_save}: keeps the compatible source");
+        assert!(!appears_in_pdf(&restored, "hunter2"), "{earlier_save}: the password value stays out of the file");
+        assert!(!appears_in_pdf(&restored, "*******"), "{earlier_save}: the typed length stays out of the file");
+        let mut reopened = Session::new();
+        let rid = reopened.open("restored.pdf", None, restored.clone(), None).unwrap();
+        assert!(reopened.get(rid).unwrap().form.iter().find(|f| f.name == "name").unwrap().value.iter().all(|v| v.is_empty()));
+        s.mark_saved(id, restored, None).unwrap();
+        assert_eq!(value(&s), ["hunter2"], "recording the save keeps the typed value in memory");
+    }
+}
+
 /// An optimized save packs objects into object streams under new numbers. Undo past it restores
 /// a graph that puts other objects at those numbers: objects that look unchanged but sat in such
 /// a stream must still be readable from the next save.
@@ -405,6 +446,15 @@ fn undo_past_an_optimized_save_keeps_the_objects_it_packed() {
         let current = &s.get(id).unwrap().editor.as_ref().unwrap().cos;
         for num in current.object_numbers() {
             let r = pdfcraft_cos::ObjRef::new(num, current.generation(num));
+            // The source's obsolete cross-reference stream is not document content. Compaction
+            // left its number unused, so Save's drop_unlinked option omits the unreferenced
+            // addition instead of copying that old index into the new revision (#4226).
+            let source_xref = matches!(current.xref_entry(num), Some(pdfcraft_cos::XrefEntry::InFile { offset, .. })
+                if current.revisions().iter().any(|revision| revision.is_stream && revision.xref_offset == offset));
+            if source_xref && matches!(packed.xref_entry(num), None | Some(pdfcraft_cos::XrefEntry::Free { .. })) {
+                assert_eq!(*saved.get(r), Object::Null, "{password:?}: an obsolete unlinked cross-reference stream");
+                continue;
+            }
             assert_eq!(*saved.get(r), *current.get(r), "{password:?}: object {num}");
         }
         let mut reopened = Session::new();
