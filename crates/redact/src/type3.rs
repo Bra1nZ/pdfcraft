@@ -248,7 +248,11 @@ fn scan_content_stream(
     for op in parsed.ops {
         match op.op.as_slice() {
             b"q" => stack.push(current_font),
-            b"Q" => current_font = stack.pop().unwrap_or(None),
+            b"Q" => {
+                if let Some(saved) = stack.pop() {
+                    current_font = saved;
+                }
+            }
             b"Tf" => {
                 if let Some(name) = op.name(0) {
                     current_font = resolve_font_in_res(ctx.doc, res, name).map(|(k, _)| k);
