@@ -7,8 +7,16 @@ license.workspace = true
 rust-version.workspace = true
 repository.workspace = true
 
-[lints]
-workspace = true
+# Local override, this branch only: the workspace's `unsafe_code = "forbid"` becomes
+# "deny" here (workspace lints must then be spelled out by hand), so src/pkcs11.rs can
+# carry one documented `#[allow]` for its raw PKCS #11 FFI. The upstream branch drops
+# this and uses the safe `cryptoki` wrapper instead, restoring the workspace policy.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
 
 [dependencies]
 pdfcraft-cos = { workspace = true }
@@ -49,6 +57,7 @@ getrandom = "0.4"
 # Safe Windows certificate store and CNG signing wrappers (MIT OR Apache-2.0).
 rustls-cng = { version = "0.7.1", default-features = false }
 
+[target.'cfg(target_os = "linux")'.dependencies]
 [target.'cfg(target_os = "macos")'.dependencies]
 # Signing with Keychain identities (MIT OR Apache-2.0).
 security-framework = "3.7"
