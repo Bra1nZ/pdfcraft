@@ -13,3 +13,4 @@ disallowed-methods = [
     { path = "egui::Ui::radio_value", reason = "use radio_value from crates/ui-egui/src/widgets.rs, which is outlined and filled" },
     { path = "egui::RadioButton::new", reason = "use radio from crates/ui-egui/src/widgets.rs, which is outlined and filled" },
 ]
+cognitive-complexity-threshold = 30
