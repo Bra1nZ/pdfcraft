@@ -5,8 +5,8 @@
 //! format, not a certified cryptographic module (СКЗИ): the certified signing
 //! operation stays in the token, and this module only computes the message
 //! digest that PKCS#11 GOST mechanisms take as input and that the CMS
-//! `digestAlgorithm` field names (see `docs/gost-signing-design.md` in the
-//! Astra Office distribution).
+//! `digestAlgorithm` field names (design overview in
+//! [pdfcraft#5468](https://github.com/storytold/pdfcraft/issues/5468)).
 //!
 //! The 8×256 multiplication tables for the linear transform are derived from
 //! the standard's substitution π, permutation τ and matrix A at compile time
