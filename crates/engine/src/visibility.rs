@@ -84,6 +84,7 @@ pub fn audit(source: ExportSource, pages: &[usize], options: Options, progress: 
     crate::guard(|| audit_inner(source, pages, options, progress))?
 }
 
+/// The audit body ([`audit`]) inside `crate::guard`: pages are 0-based here, 1-based in the report.
 fn audit_inner(source: ExportSource, pages: &[usize], options: Options, mut progress: impl FnMut(usize) -> bool) -> Result<Report, String> {
     if pages.iter().any(|&page| page >= source.pages) {
         return Err("the visibility-audit page range is out of bounds".into());
@@ -133,6 +134,9 @@ impl Classifier {
         Self { options, glyphs: 0, order: Vec::new(), buckets: BTreeMap::new() }
     }
 
+    /// Classifies one glyph as it streams in: a review lens first (`actual-text`), then the
+    /// shape kinds (unpainted, off-page, transparent, light-fill, tiny), then concealed
+    /// Unicode characters. Samples cap at [`MAX_SAMPLES`]; only counts and samples are held.
     pub(crate) fn push(&mut self, glyph: &GlyphAudit) {
         self.glyphs += 1;
         let note = |classifier: &mut Self, kind: &'static str| {
@@ -178,6 +182,7 @@ impl Classifier {
         }
     }
 
+    /// The page's report: 1-based page number, total glyphs and the findings in first-seen kind order.
     pub(crate) fn finish(mut self, page: usize) -> PageReport {
         PageReport {
             page: page.saturating_add(1),
