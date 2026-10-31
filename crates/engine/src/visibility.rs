@@ -4,7 +4,7 @@
 //! format's; every finding says why, and none of them says the document is safe.
 //!
 //! Kinds, in the priority a glyph is counted under (each glyph under at most one of the four
-//! shape kinds; hidden characters are counted on visible glyphs separately):
+//! shape kinds; the review lenses below are reported on top of a shape kind):
 //!
 //! - `invisible`: painted by no render mode (ISO 32000-2 §9.3.3 render modes 3 and 7, and
 //!   clip-shaping glyphs);
@@ -14,11 +14,15 @@
 //!   paper a viewer defaults to, so close to invisible in practice;
 //! - `tiny`: em-box height below [`Options::tiny_pt`];
 //! - `hidden-characters`: zero-width, bidi-control or tag characters in the text an extractor
-//!   returns (U+200B–200D, U+2060–2064, U+FEFF, U+202A–202E, U+2066–2069, U+E0000–E007F).
+//!   returns (U+200B–200D, U+2060–2064, U+FEFF, U+202A–202E, U+2066–2069, U+E0000–E007F);
+//! - `actual-text`: the glyph carries a `/ActualText` replacement (ISO 32000-2 §14.9.4) —
+//!   an extractor reads the replacement string while a reader sees whatever the source span
+//!   paints. A review lens: a visible `.` can stand for text the reader never sees, so the
+//!   pair is reported however both sides look.
 
 use std::collections::BTreeMap;
 
-use pdfcraft_render::{PageRenderer, text::GlyphAudit};
+use pdfcraft_render::text::GlyphAudit;
 
 use crate::export::ExportSource;
 
@@ -63,8 +67,6 @@ pub struct PageReport {
     /// 1-based page number.
     pub page: usize,
     pub glyphs: usize,
-    /// Glyphs the page device counted but stopped recording ([`MAX_GLYPHS`]).
-    pub dropped: usize,
     pub findings: Vec<Finding>,
 }
 
@@ -89,7 +91,7 @@ fn audit_inner(source: ExportSource, pages: &[usize], options: Options, mut prog
     if !progress(0) {
         return Err("visibility audit cancelled".into());
     }
-    let mut renderer = PageRenderer::new(source.bytes, source.config);
+    let mut renderer = pdfcraft_render::PageRenderer::new(source.bytes, source.config);
     let mut report = Report::default();
     let mut seen = std::collections::HashSet::new();
     for &page in pages {
@@ -99,8 +101,11 @@ fn audit_inner(source: ExportSource, pages: &[usize], options: Options, mut prog
         if !progress(report.pages.len()) {
             return Err("visibility audit cancelled".into());
         }
-        let page_audit = renderer.audit(page).map_err(|e| format!("page {}: {e}", page.saturating_add(1)))?;
-        report.pages.push(page_report(page, &page_audit, options));
+        // The classifier holds only counts and samples, so a hostile page's glyph volume
+        // costs memory it does not earn: every glyph is classified, none is stored whole.
+        let mut classifier = Classifier::new(options);
+        renderer.audit_with(page, &mut |glyph| classifier.push(&glyph)).map_err(|e| format!("page {}: {e}", page.saturating_add(1)))?;
+        report.pages.push(classifier.finish(page));
         progress(report.pages.len());
     }
     for page in &report.pages {
@@ -111,56 +116,78 @@ fn audit_inner(source: ExportSource, pages: &[usize], options: Options, mut prog
     Ok(report)
 }
 
-fn page_report(page: usize, audit: &pdfcraft_render::text::PageAudit, options: Options) -> PageReport {
-    /// kind → (count, samples, rects), in first-seen kind order.
-    type Bucket = (usize, Vec<String>, Vec<[f64; 4]>);
-    let mut order: Vec<&'static str> = Vec::new();
-    let mut buckets: BTreeMap<&'static str, Bucket> = BTreeMap::new();
-    let mut note = |kind: &'static str, glyph: &GlyphAudit| {
-        let bucket = buckets.entry(kind).or_insert_with(|| {
-            order.push(kind);
-            (0, Vec::new(), Vec::new())
-        });
-        bucket.0 += 1;
-        if bucket.1.len() < MAX_SAMPLES {
-            let mut sample: String = glyph.text.chars().take(MAX_SAMPLE).flat_map(char::escape_debug).collect();
-            if glyph.text.chars().count() > MAX_SAMPLE {
-                sample.push('…');
+/// kind → (count, samples, rects), in first-seen kind order.
+type Bucket = (usize, Vec<String>, Vec<[f64; 4]>);
+
+/// Classifies a page's glyphs as they stream in ([`pdfcraft_render::text::audit_page_with`]):
+/// exact counts per kind, samples capped at [`MAX_SAMPLES`].
+pub(crate) struct Classifier {
+    options: Options,
+    glyphs: usize,
+    order: Vec<&'static str>,
+    buckets: BTreeMap<&'static str, Bucket>,
+}
+
+impl Classifier {
+    pub(crate) fn new(options: Options) -> Self {
+        Self { options, glyphs: 0, order: Vec::new(), buckets: BTreeMap::new() }
+    }
+
+    pub(crate) fn push(&mut self, glyph: &GlyphAudit) {
+        self.glyphs += 1;
+        let note = |classifier: &mut Self, kind: &'static str| {
+            let bucket = classifier.buckets.entry(kind).or_insert_with(|| {
+                classifier.order.push(kind);
+                (0, Vec::new(), Vec::new())
+            });
+            bucket.0 += 1;
+            if bucket.1.len() < MAX_SAMPLES {
+                let mut sample: String = glyph.text.chars().take(MAX_SAMPLE).flat_map(char::escape_debug).collect();
+                if glyph.text.chars().count() > MAX_SAMPLE {
+                    sample.push('…');
+                }
+                bucket.1.push(sample);
+                bucket.2.push(glyph.rect.map(f64::from));
             }
-            bucket.1.push(sample);
-            bucket.2.push(glyph.rect.map(f64::from));
+        };
+        // A review lens first, on top of the shape kinds: the replacement text may read
+        // nothing like what the reader sees.
+        if glyph.actual_text {
+            note(self, "actual-text");
         }
-    };
-    for glyph in &audit.glyphs {
         if glyph.unpainted {
-            note("invisible", glyph);
-            continue;
+            note(self, "invisible");
+            return;
         }
         if glyph.off_page {
-            note("off-page", glyph);
-            continue;
+            note(self, "off-page");
+            return;
         }
         match glyph.fill {
-            Some([_, _, _, a]) if a < Options::TRANSPARENT_A => note("transparent", glyph),
-            Some([r, g, b, _]) if luma(r, g, b) >= options.light_luma => note("light-fill", glyph),
-            _ if f64::from(glyph.rect[3] - glyph.rect[1]) < f64::from(options.tiny_pt) => note("tiny", glyph),
+            Some([_, _, _, a]) if a < Options::TRANSPARENT_A => note(self, "transparent"),
+            Some([r, g, b, _]) if luma(r, g, b) >= self.options.light_luma => note(self, "light-fill"),
+            _ if f64::from(glyph.rect[3] - glyph.rect[1]) < f64::from(self.options.tiny_pt) => note(self, "tiny"),
             _ => {}
         }
-        if glyph.fill.is_none_or(|[_, _, _, a]| a >= Options::TRANSPARENT_A) && !glyph.unpainted && !glyph.off_page {
-            let mut hidden = glyph.text.chars().filter_map(hidden_kind);
-            if let Some(kind) = hidden.next() {
-                note(kind, glyph);
-            }
+        if glyph.fill.is_none_or(|[_, _, _, a]| a >= Options::TRANSPARENT_A)
+            && !glyph.unpainted
+            && !glyph.off_page
+            && let Some(kind) = glyph.text.chars().filter_map(hidden_kind).next()
+        {
+            note(self, kind);
         }
     }
-    PageReport {
-        page: page.saturating_add(1),
-        glyphs: audit.glyphs.len(),
-        dropped: audit.dropped,
-        findings: order
-            .into_iter()
-            .filter_map(|kind| buckets.remove(kind).map(|(count, samples, rects)| Finding { kind, count, samples, rects }))
-            .collect(),
+
+    pub(crate) fn finish(mut self, page: usize) -> PageReport {
+        PageReport {
+            page: page.saturating_add(1),
+            glyphs: self.glyphs,
+            findings: self
+                .order
+                .into_iter()
+                .filter_map(|kind| self.buckets.remove(kind).map(|(count, samples, rects)| Finding { kind, count, samples, rects }))
+                .collect(),
+        }
     }
 }
 
@@ -187,24 +214,22 @@ mod tests {
 
     /// A painted, on-page glyph 12 pt tall at (10, 20), unless overridden.
     fn glyph(text: &str, unpainted: bool, off_page: bool, fill: Option<[u8; 4]>, height: f32) -> GlyphAudit {
-        GlyphAudit { text: text.to_string(), rect: [10.0, 20.0, 60.0, 20.0 + height], unpainted, off_page, fill }
+        GlyphAudit { text: text.to_string(), rect: [10.0, 20.0, 60.0, 20.0 + height], unpainted, off_page, fill, actual_text: false }
     }
 
     fn classified(glyphs: Vec<GlyphAudit>) -> Vec<(&'static str, usize)> {
-        page_report(0, &pdfcraft_render::text::PageAudit { glyphs, dropped: 0 }, Options::default())
-            .findings
-            .into_iter()
-            .map(|f| (f.kind, f.count))
-            .collect()
+        let mut c = Classifier::new(Options::default());
+        for g in &glyphs {
+            c.push(g);
+        }
+        c.finish(0).findings.into_iter().map(|f| (f.kind, f.count)).collect()
     }
 
     #[test]
     fn ordinary_visible_text_has_no_findings() {
-        let report = page_report(
-            0,
-            &pdfcraft_render::text::PageAudit { glyphs: vec![glyph("Hello", false, false, Some([0, 0, 0, 255]), 12.0)], dropped: 0 },
-            Options::default(),
-        );
+        let mut c = Classifier::new(Options::default());
+        c.push(&glyph("Hello", false, false, Some([0, 0, 0, 255]), 12.0));
+        let report = c.finish(0);
         assert_eq!(report.page, 1);
         assert_eq!(report.glyphs, 1);
         assert!(report.findings.is_empty());
@@ -238,27 +263,39 @@ mod tests {
     }
 
     #[test]
+    fn actual_text_is_a_review_lens_on_top_of_the_shape_kinds() {
+        // A replacement whose span paints nothing: both findings, the pair a caller reviews.
+        let mut g = glyph("\u{feff}", true, false, Some([0, 0, 0, 255]), 12.0);
+        g.actual_text = true;
+        assert_eq!(classified(vec![g]), vec![("actual-text", 1), ("invisible", 1)]);
+        // A painted replacement is still reported as a replacement.
+        let mut g = glyph(".", false, false, Some([0, 0, 0, 255]), 12.0);
+        g.actual_text = true;
+        assert_eq!(classified(vec![g]), vec![("actual-text", 1)]);
+    }
+
+    #[test]
     fn samples_are_capped_and_escaped() {
         let glyphs: Vec<GlyphAudit> = (0..10).map(|i| glyph(&format!("h{i}"), true, false, Some([0, 0, 0, 255]), 12.0)).collect();
-        let report = page_report(0, &pdfcraft_render::text::PageAudit { glyphs, dropped: 7 }, Options::default());
+        let mut c = Classifier::new(Options::default());
+        for g in &glyphs {
+            c.push(g);
+        }
+        let report = c.finish(0);
         let f = &report.findings[0];
         assert_eq!(f.kind, "invisible");
         assert_eq!(f.count, 10);
         assert_eq!(f.samples.len(), MAX_SAMPLES);
         assert_eq!(f.rects.len(), MAX_SAMPLES);
         assert_eq!(f.samples[0], "h0");
-        assert_eq!(report.dropped, 7);
     }
 
     #[test]
     fn long_samples_are_truncated() {
         let text: String = "ж".repeat(MAX_SAMPLE + 10);
-        let report = page_report(
-            0,
-            &pdfcraft_render::text::PageAudit { glyphs: vec![glyph(&text, true, false, Some([0, 0, 0, 255]), 12.0)], dropped: 0 },
-            Options::default(),
-        );
-        let f = &report.findings[0];
+        let mut c = Classifier::new(Options::default());
+        c.push(&glyph(&text, true, false, Some([0, 0, 0, 255]), 12.0));
+        let f = &c.finish(0).findings[0];
         assert_eq!(f.samples[0].chars().count(), MAX_SAMPLE + 1); // + the ellipsis
         assert!(f.samples[0].ends_with('…'));
     }

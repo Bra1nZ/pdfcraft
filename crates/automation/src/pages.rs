@@ -188,12 +188,17 @@ impl Automation {
             Some(_) => self.pages(a, "pages")?,
             None => (0..doc.info.pages.len()).collect(),
         };
-        let report = visibility::audit(doc.export_source(), &pages, visibility::Options::default(), |_| true).map_err(failed)?;
+        // The audit must see what a text extractor sees: the view's layer overrides and hidden
+        // comments would remove text from it that extraction still returns. Only the password
+        // travels from the view's config (`text_extract` reads with the same rule).
+        let source = doc.export_source();
+        let config = pdfcraft_render::RenderConfig { password: source.config.password.clone(), ..Default::default() };
+        let report = visibility::audit(pdfcraft_engine::export::ExportSource { config, ..source }, &pages, visibility::Options::default(), |_| true)
+            .map_err(failed)?;
         let page = |p: &visibility::PageReport| {
             json!({
                 "page": p.page,
                 "glyphs": p.glyphs,
-                "dropped": p.dropped,
                 "findings": p.findings.iter().map(|f| json!({
                     "kind": f.kind,
                     "count": f.count,

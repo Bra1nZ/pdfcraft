@@ -377,7 +377,7 @@ mod device;
 mod layout;
 mod order;
 
-pub use audit::{GlyphAudit, PageAudit, audit_page};
+pub use audit::{GlyphAudit, PageAudit, audit_page, audit_page_with};
 use device::WORD_GAP;
 #[cfg(test)]
 use device::{MAX_REDRAW_TEXT, REDRAW_TEXT_BYTES, Replaced, TextDevice};

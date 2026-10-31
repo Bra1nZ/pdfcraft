@@ -6,21 +6,22 @@
 //! classification, not the format's.
 //!
 //! Unlike text extraction ([`super::device`]) nothing is dropped: invisible and off-page glyphs
-//! are the point. Only hostile volume is capped, and visibly: past the cap glyphs are counted
-//! in [`PageAudit::dropped`] instead of recorded.
+//! are the point. Memory is the caller's: glyphs stream through a sink one at a time, so a
+//! hostile page costs the caller nothing it did not ask for. `/ActualText` replacements
+//! (ISO 32000-2 §14.9.4) are reported as extraction sees them — one glyph standing for the
+//! span, flagged [`GlyphAudit::actual_text`] so a caller can review what the reader saw against
+//! what the extractor reads.
 
 use super::{
     Affine, BezPath, BlendMode, ClipPath, Context, Device, Glyph, GlyphDrawMode, Image, InterpreterCache, InterpreterSettings, Paint, PathDrawMode,
     Pdf, Rect, Shape, SoftMask, TransformExt, interpret_page,
 };
 
-/// Most glyphs audited on one page.
-const MAX_GLYPHS: usize = 100_000;
-
 /// One glyph a text extractor reads, with what makes it invisible (or nearly) to a reader.
 #[derive(Clone, Debug, PartialEq)]
 pub struct GlyphAudit {
-    /// The glyph's Unicode text (one character, or several for a ligature).
+    /// The glyph's Unicode text (one character, or several for a ligature), or the
+    /// `/ActualText` string the extractor reads in place of the span.
     pub text: String,
     /// Em-box bounding rect in page view space (points, origin top-left, y down): [x0, y0, x1, y1].
     pub rect: [f32; 4],
@@ -30,23 +31,28 @@ pub struct GlyphAudit {
     pub off_page: bool,
     /// Solid fill colour, RGBA 0–255; `None` for patterns and strokes.
     pub fill: Option<[u8; 4]>,
+    /// The glyph stands for a `/ActualText` replacement: `text` is what an extractor reads,
+    /// while a reader sees whatever the source span paints. The span's own visibility flags
+    /// (painted below) are the source glyphs', not the replacement string's.
+    pub actual_text: bool,
 }
 
 /// The audit of one page: every glyph an extractor reads, in content order.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct PageAudit {
     pub glyphs: Vec<GlyphAudit>,
-    /// Glyphs past [`MAX_GLYPHS`]: counted, not recorded.
-    pub dropped: usize,
 }
 
-struct AuditDevice {
+struct AuditDevice<'s> {
     page: Rect,
-    glyphs: Vec<GlyphAudit>,
-    dropped: usize,
+    sink: &'s mut dyn FnMut(GlyphAudit),
+    /// The outermost open `/ActualText` replacement: its depth, text and the audited glyphs
+    /// drawn inside it, mirroring `TextDevice` (an inner replacement is covered by the outer).
+    actual: Option<(usize, String, Vec<GlyphAudit>)>,
+    depth: usize,
 }
 
-impl<'a> Device<'a> for AuditDevice {
+impl<'a> Device<'a> for AuditDevice<'_> {
     fn set_soft_mask(&mut self, _: Option<SoftMask<'a>>) {}
     fn set_blend_mode(&mut self, _: BlendMode) {}
     fn draw_path(&mut self, _: &BezPath, _: Affine, _: &Paint<'a>, _: &PathDrawMode) {}
@@ -54,22 +60,75 @@ impl<'a> Device<'a> for AuditDevice {
     fn push_transparency_group(&mut self, _: f32, _: Option<SoftMask<'a>>, _: BlendMode) {}
     fn pop_clip_path(&mut self) {}
     fn pop_transparency_group(&mut self) {}
-    fn begin_marked_content(&mut self, _: &[u8], _: Option<i32>) {}
-    fn actual_text(&mut self, _: &[u8]) {}
-    fn end_marked_content(&mut self) {}
+    fn draw_image(&mut self, _: Image<'a, '_>, _: Affine) {}
+
+    fn begin_marked_content(&mut self, _: &[u8], _: Option<i32>) {
+        self.depth = self.depth.saturating_add(1);
+    }
+
+    fn actual_text(&mut self, text: &[u8]) {
+        // A replacement nested in another is already covered by the outer one (as TextDevice).
+        if self.actual.is_none() {
+            let text = pdfcraft_cos::PdfString::literal(text).to_text();
+            self.actual = Some((self.depth, text, Vec::new()));
+        }
+    }
+
+    fn end_marked_content(&mut self) {
+        if let Some((_, text, drawn)) = self.actual.take_if(|(depth, _, _)| *depth == self.depth) {
+            // The extractor reads the replacement string in place of the span (one merged
+            // glyph, as TextDevice's `merge`); a control-character replacement reads as
+            // nothing. The reader, meanwhile, sees whatever the source glyphs painted —
+            // that is what the merged glyph's paint fields carry.
+            if !text.chars().all(char::is_control) {
+                let drawn: Vec<&GlyphAudit> = drawn.iter().filter(|g| !g.text.chars().all(char::is_control)).collect();
+                if let Some(first) = drawn.first() {
+                    let mut rect = first.rect;
+                    for g in &drawn {
+                        rect = [rect[0].min(g.rect[0]), rect[1].min(g.rect[1]), rect[2].max(g.rect[2]), rect[3].max(g.rect[3])];
+                    }
+                    (self.sink)(GlyphAudit {
+                        text,
+                        rect,
+                        // The replacement is invisible only if nothing in the span paints.
+                        unpainted: drawn.iter().all(|g| g.unpainted),
+                        off_page: drawn.iter().all(|g| g.off_page),
+                        fill: first.fill,
+                        actual_text: true,
+                    });
+                }
+            }
+        }
+        self.depth = self.depth.saturating_sub(1);
+    }
 
     fn draw_glyph(&mut self, glyph: &Glyph<'a>, transform: Affine, glyph_transform: Affine, paint: &Paint<'a>, mode: &GlyphDrawMode) {
-        if self.glyphs.len() >= MAX_GLYPHS {
-            self.dropped += 1;
-            return;
+        let Some(g) = self.audited_glyph(glyph, transform, glyph_transform, paint, mode) else { return };
+        match &mut self.actual {
+            // Inside an `/ActualText` span the extractor will not read this glyph's own text;
+            // the span's merged replacement is reported on `end_marked_content`.
+            Some((_, _, drawn)) => drawn.push(g),
+            None => (self.sink)(g),
         }
+    }
+}
+
+impl AuditDevice<'_> {
+    fn audited_glyph(
+        &mut self,
+        glyph: &Glyph<'_>,
+        transform: Affine,
+        glyph_transform: Affine,
+        paint: &Paint<'_>,
+        mode: &GlyphDrawMode,
+    ) -> Option<GlyphAudit> {
         let text = match glyph.as_unicode() {
             Some(hayro::hayro_interpret::hayro_cmap::BfString::Char(c)) => c.to_string(),
             Some(hayro::hayro_interpret::hayro_cmap::BfString::String(s)) => s,
-            None => return,
+            None => return None,
         };
         if text.chars().all(char::is_control) {
-            return;
+            return None;
         }
         let fill = match paint {
             Paint::Color(c) => Some(c.to_rgba().to_rgba8()),
@@ -96,19 +155,17 @@ impl<'a> Device<'a> for AuditDevice {
         if !(b.x0.is_finite() && b.y0.is_finite() && b.x1.is_finite() && b.y1.is_finite()) || b.width() > 10_000.0 || b.height() > 10_000.0 {
             // A hostile or broken transform: the text still goes to extractors, so record it
             // without a box, flagged off-page.
-            self.glyphs.push(GlyphAudit { text, rect: [0.0; 4], unpainted, off_page: true, fill });
-            return;
+            return Some(GlyphAudit { text, rect: [0.0; 4], unpainted, off_page: true, fill, actual_text: false });
         }
         let off_page = b.x0.max(self.page.x0) >= b.x1.min(self.page.x1) || b.y0.max(self.page.y0) >= b.y1.min(self.page.y1);
-        self.glyphs.push(GlyphAudit { text, rect: [b.x0 as f32, b.y0 as f32, b.x1 as f32, b.y1 as f32], unpainted, off_page, fill });
+        Some(GlyphAudit { text, rect: [b.x0 as f32, b.y0 as f32, b.x1 as f32, b.y1 as f32], unpainted, off_page, fill, actual_text: false })
     }
-
-    fn draw_image(&mut self, _: Image<'a, '_>, _: Affine) {}
 }
 
-/// Audit one page: every glyph an extractor reads, with what makes it invisible to a reader.
-/// Panics inside the interpreter are the caller's to catch (`crate::guard`).
-pub fn audit_page(pdf: &Pdf, page: usize, settings: &InterpreterSettings) -> Result<PageAudit, String> {
+/// Audit one page, streaming every glyph an extractor reads to `sink` in content order.
+/// Memory stays with the caller. Panics inside the interpreter are the caller's to catch
+/// (`crate::guard`).
+pub fn audit_page_with(pdf: &Pdf, page: usize, settings: &InterpreterSettings, sink: &mut dyn FnMut(GlyphAudit)) -> Result<(), String> {
     let pages = pdf.pages();
     let p = pages.get(page).ok_or("the page could not be read")?;
     let (w, h) = p.render_dimensions();
@@ -117,9 +174,18 @@ pub fn audit_page(pdf: &Pdf, page: usize, settings: &InterpreterSettings) -> Res
     let initial = p.initial_transform(true).to_kurbo();
     let c = p.intersected_crop_box();
     let mut ctx = Context::new(initial, Rect::new(0.0, 0.0, f64::from(w), f64::from(h)), &cache, p.xref(), settings);
-    let mut dev = AuditDevice { page: initial.transform_rect_bbox(Rect::new(c.x0, c.y0, c.x1, c.y1)), glyphs: Vec::new(), dropped: 0 };
+    let mut dev = AuditDevice { page: initial.transform_rect_bbox(Rect::new(c.x0, c.y0, c.x1, c.y1)), sink, actual: None, depth: 0 };
     interpret_page(p, &mut ctx, &mut dev);
-    Ok(PageAudit { glyphs: dev.glyphs, dropped: dev.dropped })
+    Ok(())
+}
+
+/// Audit one page, collecting every glyph an extractor reads. Prefer [`audit_page_with`]: a
+/// hostile page's glyph count is the caller's memory here. Panics inside the interpreter are
+/// the caller's to catch (`crate::guard`).
+pub fn audit_page(pdf: &Pdf, page: usize, settings: &InterpreterSettings) -> Result<PageAudit, String> {
+    let mut glyphs = Vec::new();
+    audit_page_with(pdf, page, settings, &mut |g| glyphs.push(g))?;
+    Ok(PageAudit { glyphs })
 }
 
 #[cfg(test)]
@@ -136,7 +202,7 @@ mod tests {
     fn visible_text_is_not_flagged() {
         let audit = audit("BT /F1 20 Tf 1 0 0 1 100 150 Tm (Hello) Tj ET");
         assert_eq!(audit.glyphs.len(), 5);
-        assert!(audit.glyphs.iter().all(|g| !g.unpainted && !g.off_page), "{:?}", audit.glyphs);
+        assert!(audit.glyphs.iter().all(|g| !g.unpainted && !g.off_page && !g.actual_text), "{:?}", audit.glyphs);
         assert!(audit.glyphs.iter().all(|g| g.fill.is_some_and(|[r, g, b, _]| r == 0 && g == 0 && b == 0)), "{:?}", audit.glyphs);
     }
 
@@ -145,7 +211,6 @@ mod tests {
         let audit = audit("BT /F1 20 Tf 1 0 0 1 100 150 Tm (See) Tj 3 Tr 1 0 0 1 100 100 Tm (Hide) Tj ET");
         assert_eq!(audit.glyphs.len(), 7);
         assert_eq!(audit.glyphs.iter().filter(|g| g.unpainted).count(), 4, "{:?}", audit.glyphs);
-        assert_eq!(audit.dropped, 0);
     }
 
     #[test]
@@ -160,5 +225,36 @@ mod tests {
         let audit = audit("BT /F1 20 Tf 1 1 1 rg 1 0 0 1 100 150 Tm (Ghost) Tj ET");
         assert_eq!(audit.glyphs.len(), 5);
         assert!(audit.glyphs.iter().all(|g| g.fill.is_some_and(|[r, g, b, _]| r == 255 && g == 255 && b == 255)), "{:?}", audit.glyphs);
+    }
+
+    /// The extractor reads a `/Span <</ActualText …>>` replacement in the span's place, and
+    /// the audit must say it is reading one.
+    #[test]
+    fn actual_text_is_reported_as_a_replacement() {
+        let audit = audit("BT /F1 20 Tf 1 0 0 1 100 150 Tm /Span <</ActualText (fi)>> BDC (find) Tj EMC ET");
+        let replaced: Vec<&GlyphAudit> = audit.glyphs.iter().filter(|g| g.actual_text).collect();
+        assert_eq!(replaced.len(), 1, "{:?}", audit.glyphs);
+        assert_eq!(replaced[0].text, "fi");
+        // The reader sees what the source glyphs painted: their own (painted) flags stand.
+        assert!(!replaced[0].unpainted);
+        // Nothing else is recorded: the extractor reads the replacement in the span's place.
+        assert_eq!(audit.glyphs.len(), 1, "{:?}", audit.glyphs);
+    }
+
+    /// A visible glyph standing for an invisible replacement must not inherit visible flags:
+    /// the reader sees the visible source, the extractor reads text the reader never sees.
+    #[test]
+    fn actual_text_over_invisible_span_stays_invisible() {
+        let audit = audit("BT /F1 20 Tf 3 Tr 1 0 0 1 100 150 Tm /Span <</ActualText (fi)>> BDC (find) Tj EMC ET");
+        let replaced: Vec<&GlyphAudit> = audit.glyphs.iter().filter(|g| g.actual_text).collect();
+        assert_eq!(replaced.len(), 1, "{:?}", audit.glyphs);
+        assert!(replaced[0].unpainted, "{:?}", replaced[0]);
+    }
+
+    /// An empty replacement reads as nothing, and the audit records nothing for the span.
+    #[test]
+    fn empty_actual_text_records_nothing() {
+        let audit = audit("BT /F1 20 Tf 1 0 0 1 100 150 Tm /Span <</ActualText ()>> BDC (find) Tj EMC ET");
+        assert!(audit.glyphs.is_empty(), "{:?}", audit.glyphs);
     }
 }

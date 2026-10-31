@@ -464,12 +464,12 @@ impl PageRenderer {
             .map_err(|e| format!("text extraction failed: {}", panic_message(&e)))?
     }
 
-    /// Audit one page for content a human does not see but a text extractor reads
-    /// ([`crate::text::audit_page`]). Never panics.
-    pub fn audit(&mut self, page: usize) -> Result<crate::text::PageAudit, String> {
+    /// Audit one page, streaming every glyph a text extractor reads to `sink`
+    /// ([`crate::text::audit_page_with`]). Never panics.
+    pub fn audit_with(&mut self, page: usize, sink: &mut dyn FnMut(crate::text::GlyphAudit)) -> Result<(), String> {
         let pdf = self.pdf.as_ref().ok_or("the document could not be parsed")?;
         self.stats.text_interpretations = self.stats.text_interpretations.saturating_add(1);
-        catch_unwind(AssertUnwindSafe(|| crate::text::audit_page(pdf, page, &self.settings)))
+        catch_unwind(AssertUnwindSafe(|| crate::text::audit_page_with(pdf, page, &self.settings, sink)))
             .map_err(|e| format!("visibility audit failed: {}", panic_message(&e)))?
     }
 
