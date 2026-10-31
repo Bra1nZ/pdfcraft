@@ -178,6 +178,37 @@ impl Automation {
         Ok(pages.iter().map(|p| (*p, results.get(p).cloned().unwrap_or_else(|| Err("text extraction returned no result".into())))).collect())
     }
 
+    /// What a text extractor would read that a human reader does not see, per page: the input
+    /// of prompt-injection checks on documents an agent is about to trust. Fails closed: a page
+    /// that cannot be read fails the audit.
+    pub(crate) fn doc_audit_visibility(&self, a: &Args) -> Result<Value> {
+        use pdfcraft_engine::visibility;
+        let doc = self.doc_to_copy(a)?;
+        let pages = match a.opt_ints("pages")? {
+            Some(_) => self.pages(a, "pages")?,
+            None => (0..doc.info.pages.len()).collect(),
+        };
+        let report = visibility::audit(doc.export_source(), &pages, visibility::Options::default(), |_| true).map_err(failed)?;
+        let page = |p: &visibility::PageReport| {
+            json!({
+                "page": p.page,
+                "glyphs": p.glyphs,
+                "dropped": p.dropped,
+                "findings": p.findings.iter().map(|f| json!({
+                    "kind": f.kind,
+                    "count": f.count,
+                    "samples": f.samples,
+                    // Points from the top-left of the displayed page, like `comment_list` and `doc_info`.
+                    "rects": f.rects,
+                })).collect::<Vec<_>>(),
+            })
+        };
+        Ok(json!({
+            "pages": report.pages.iter().map(page).collect::<Vec<_>>(),
+            "totals": report.totals,
+        }))
+    }
+
     pub(crate) fn text_word_count(&self, a: &Args) -> Result<Value> {
         use pdfcraft_engine::word_count::{self, Counts, Options};
         let doc = self.doc_to_copy(a)?;

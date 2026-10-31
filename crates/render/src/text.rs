@@ -372,10 +372,12 @@ impl PageText {
 
 use hayro::hayro_interpret::TransformExt;
 
+mod audit;
 mod device;
 mod layout;
 mod order;
 
+pub use audit::{GlyphAudit, PageAudit, audit_page};
 use device::WORD_GAP;
 #[cfg(test)]
 use device::{MAX_REDRAW_TEXT, REDRAW_TEXT_BYTES, Replaced, TextDevice};

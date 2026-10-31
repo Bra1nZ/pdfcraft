@@ -573,6 +573,13 @@ pub fn tools() -> Vec<ToolDef> {
             &["doc"],
         )),
         t(
+            "doc_audit_visibility",
+            "Audit content invisible to a human reader",
+            "What a text extractor would read that a human reader does not see, per page: text painted by no render mode (ISO 32000-2 §9.3.3 render modes 3/7), wholly off the displayed page, transparent or near-white filled, smaller than 1.5 pt, or carrying zero-width, bidi-control or tag Unicode characters (U+200B–200D, U+2060–2064, U+FEFF, U+202A–202E, U+2066–2069, U+E0000–E007F; emoji ZWJ sequences are flagged too, for review). Each finding reports the kind, an exact count, at most 8 samples and their rectangles (points from the top-left of the displayed page, like comment_list). Findings are lenses, not a verdict: nothing here says a document is safe. Fails closed: a page that cannot be read fails the audit.",
+        )
+        .ro()
+        .with(schema(json!({ "doc": doc(), "pages": { "type": "array", "items": { "type": "integer" } } }), &["doc"])),
+        t(
             "doc_audit_redactions",
             "Audit faux redactions",
             "Find faux redactions: opaque filled rectangles painted over text that is still extractable, and /Redact annotations that were marked but never applied. Paint-order and colour-aware: a rectangle counts only when painted after the text and dark enough to hide it (page backgrounds and light shading are not flagged). Each finding reports the 1-based page, the kind (covered-text or unapplied-mark), the rectangle (points from the top-left of the displayed page, like comment_list), and the hidden text. Fails closed: unreadable content is an error, never a clean bill. A properly applied redaction removes the text and never flags.",
