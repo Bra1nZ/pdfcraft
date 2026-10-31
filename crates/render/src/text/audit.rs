@@ -43,12 +43,45 @@ pub struct PageAudit {
     pub glyphs: Vec<GlyphAudit>,
 }
 
+/// What an open `/ActualText` replacement has drawn so far, aggregated glyph by glyph: the
+/// reader sees this, the extractor reads the replacement string. Nothing per-glyph is kept,
+/// so a page-long valid span costs the same as a one-glyph one.
+struct ActualDrawn {
+    /// Union rectangle of the drawn glyphs; `None` while nothing has painted.
+    rect: Option<[f32; 4]>,
+    /// Painted by no glyph in the span: `all` over the drawn glyphs, so the empty span's
+    /// identity is `true`.
+    unpainted: bool,
+    off_page: bool,
+    fill: Option<[u8; 4]>,
+}
+
+impl Default for ActualDrawn {
+    fn default() -> Self {
+        Self { rect: None, unpainted: true, off_page: true, fill: None }
+    }
+}
+
+impl ActualDrawn {
+    fn draw(&mut self, glyph: &GlyphAudit) {
+        self.rect = Some(match self.rect {
+            Some(r) => [r[0].min(glyph.rect[0]), r[1].min(glyph.rect[1]), r[2].max(glyph.rect[2]), r[3].max(glyph.rect[3])],
+            None => glyph.rect,
+        });
+        self.unpainted &= glyph.unpainted;
+        self.off_page &= glyph.off_page;
+        if self.fill.is_none() {
+            self.fill = glyph.fill;
+        }
+    }
+}
+
 struct AuditDevice<'s> {
     page: Rect,
     sink: &'s mut dyn FnMut(GlyphAudit),
-    /// The outermost open `/ActualText` replacement: its depth, text and the audited glyphs
-    /// drawn inside it, mirroring `TextDevice` (an inner replacement is covered by the outer).
-    actual: Option<(usize, String, Vec<GlyphAudit>)>,
+    /// The outermost open `/ActualText` replacement: its depth, text and what the span has
+    /// drawn, mirroring `TextDevice` (an inner replacement is covered by the outer).
+    actual: Option<(usize, String, ActualDrawn)>,
     depth: usize,
 }
 
@@ -70,34 +103,13 @@ impl<'a> Device<'a> for AuditDevice<'_> {
         // A replacement nested in another is already covered by the outer one (as TextDevice).
         if self.actual.is_none() {
             let text = pdfcraft_cos::PdfString::literal(text).to_text();
-            self.actual = Some((self.depth, text, Vec::new()));
+            self.actual = Some((self.depth, text, ActualDrawn::default()));
         }
     }
 
     fn end_marked_content(&mut self) {
         if let Some((_, text, drawn)) = self.actual.take_if(|(depth, _, _)| *depth == self.depth) {
-            // The extractor reads the replacement string in place of the span (one merged
-            // glyph, as TextDevice's `merge`); a control-character replacement reads as
-            // nothing. The reader, meanwhile, sees whatever the source glyphs painted —
-            // that is what the merged glyph's paint fields carry.
-            if !text.chars().all(char::is_control) {
-                let drawn: Vec<&GlyphAudit> = drawn.iter().filter(|g| !g.text.chars().all(char::is_control)).collect();
-                if let Some(first) = drawn.first() {
-                    let mut rect = first.rect;
-                    for g in &drawn {
-                        rect = [rect[0].min(g.rect[0]), rect[1].min(g.rect[1]), rect[2].max(g.rect[2]), rect[3].max(g.rect[3])];
-                    }
-                    (self.sink)(GlyphAudit {
-                        text,
-                        rect,
-                        // The replacement is invisible only if nothing in the span paints.
-                        unpainted: drawn.iter().all(|g| g.unpainted),
-                        off_page: drawn.iter().all(|g| g.off_page),
-                        fill: first.fill,
-                        actual_text: true,
-                    });
-                }
-            }
+            self.emit_actual(text, drawn);
         }
         self.depth = self.depth.saturating_sub(1);
     }
@@ -107,13 +119,32 @@ impl<'a> Device<'a> for AuditDevice<'_> {
         match &mut self.actual {
             // Inside an `/ActualText` span the extractor will not read this glyph's own text;
             // the span's merged replacement is reported on `end_marked_content`.
-            Some((_, _, drawn)) => drawn.push(g),
+            Some((_, _, drawn)) => drawn.draw(&g),
             None => (self.sink)(g),
         }
     }
 }
 
 impl AuditDevice<'_> {
+    /// Emit the replacement an extractor reads in the span's place, as one merged glyph (as
+    /// TextDevice's `merge`): the reader sees whatever the source glyphs painted — the merged
+    /// glyph's paint fields carry that. A control-character replacement reads as nothing.
+    fn emit_actual(&mut self, text: String, drawn: ActualDrawn) {
+        if text.chars().all(char::is_control) {
+            return;
+        }
+        let Some(rect) = drawn.rect else { return };
+        (self.sink)(GlyphAudit { text, rect, unpainted: drawn.unpainted, off_page: drawn.off_page, fill: drawn.fill, actual_text: true });
+    }
+
+    /// Flush a `/ActualText` span still open at page end (a missing `EMC`), as
+    /// `TextDevice::finish` does for extraction.
+    fn finish(&mut self) {
+        if let Some((_, text, drawn)) = self.actual.take() {
+            self.emit_actual(text, drawn);
+        }
+    }
+
     fn audited_glyph(
         &mut self,
         glyph: &Glyph<'_>,
@@ -176,6 +207,9 @@ pub fn audit_page_with(pdf: &Pdf, page: usize, settings: &InterpreterSettings, s
     let mut ctx = Context::new(initial, Rect::new(0.0, 0.0, f64::from(w), f64::from(h)), &cache, p.xref(), settings);
     let mut dev = AuditDevice { page: initial.transform_rect_bbox(Rect::new(c.x0, c.y0, c.x1, c.y1)), sink, actual: None, depth: 0 };
     interpret_page(p, &mut ctx, &mut dev);
+    // A span left open (a missing EMC) still replaces what extraction reads: flush it, as
+    // TextDevice::finish does.
+    dev.finish();
     Ok(())
 }
 
@@ -256,5 +290,16 @@ mod tests {
     fn empty_actual_text_records_nothing() {
         let audit = audit("BT /F1 20 Tf 1 0 0 1 100 150 Tm /Span <</ActualText ()>> BDC (find) Tj EMC ET");
         assert!(audit.glyphs.is_empty(), "{:?}", audit.glyphs);
+    }
+
+    /// A span left open (a missing `EMC`) still replaces what extraction reads, so the audit
+    /// must flush it at page end exactly as `TextDevice::finish` does.
+    #[test]
+    fn unclosed_actual_text_span_is_flushed() {
+        let audit = audit("BT /F1 20 Tf 1 0 0 1 100 150 Tm /Span <</ActualText (fi)>> BDC (find) Tj ET");
+        let replaced: Vec<&GlyphAudit> = audit.glyphs.iter().filter(|g| g.actual_text).collect();
+        assert_eq!(replaced.len(), 1, "{:?}", audit.glyphs);
+        assert_eq!(replaced[0].text, "fi");
+        assert_eq!(audit.glyphs.len(), 1, "{:?}", audit.glyphs);
     }
 }
